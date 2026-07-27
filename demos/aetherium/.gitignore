@@ -1,0 +1,11 @@
+# Reproducible fetch, not a checked-in copy of Three.js.
+# Populate with: node tools/fetch-three.mjs
+vendor/
+
+# Screenshot output from tools/capture.mjs
+captures/
+
+# This demo has no build step and no dependencies of its own; if anything
+# installs here it is incidental.
+node_modules/
+package-lock.json

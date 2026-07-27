@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Aetherium Odyssey — Elysium Prime</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <canvas id="c"></canvas>
+
+  <!-- Reticle, hit markers, damage arcs and the low-health vignette are drawn
+       here rather than as DOM nodes: they change every frame. -->
+  <canvas id="reticleCanvas" class="fullscreen-canvas"></canvas>
+
+  <div id="waypoint" class="waypoint">
+    <div class="wp-diamond"></div>
+    <div class="wp-label">Objective</div>
+    <div class="wp-dist">0m</div>
+  </div>
+
+  <div id="hud" class="hidden">
+    <div class="hud-top">
+      <div class="objective-block">
+        <div id="stageLabel" class="stage-label">STAGE 1 / 4</div>
+        <div id="objective" class="objective">Secure the Landing</div>
+        <div id="objectiveSub" class="objective-sub"></div>
+      </div>
+    </div>
+
+    <div id="alertBar" class="alert-bar"><span></span></div>
+
+    <div class="hud-right">
+      <canvas id="minimap" class="minimap"></canvas>
+      <div id="killFeed" class="kill-feed"></div>
+    </div>
+
+    <div class="hud-bottom">
+      <div class="stat hp">
+        <div class="stat-label">Integrity</div>
+        <div class="stat-row">
+          <div id="hpValue" class="stat-value">100</div>
+          <div class="bar"><div id="hpFill" class="fill" style="width:100%"></div></div>
+        </div>
+      </div>
+
+      <div id="ammoBlock" class="stat ammo">
+        <div class="stat-label">Kestrel Carbine</div>
+        <div class="stat-row">
+          <div id="ammoMag" class="stat-value">30</div>
+          <div class="ammo-sep">/</div>
+          <div id="ammoReserve" class="stat-reserve">120</div>
+        </div>
+        <div class="reload-hint">R — Reload</div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+    <pre id="perf" class="perf hidden"></pre>
+  </div>
+
+  <div id="loading" class="screen">
+    <div class="panel">
+      <h1>AETHERIUM ODYSSEY</h1>
+      <p class="tagline">Elysium Prime</p>
+      <div class="load-track"><div id="loadBar" class="load-bar"></div></div>
+      <p id="loadLabel" class="load-label">Booting renderer</p>
+      <p class="load-note">
+        Every texture, mesh and sound in this demo is generated procedurally at
+        load time. Nothing is downloaded but the engine itself.
+      </p>
+    </div>
+  </div>
+
+  <div id="overlay" class="screen hidden">
+    <div class="panel">
+      <h1>AETHERIUM ODYSSEY</h1>
+      <p class="tagline">Elysium Prime — Archipelago Campaign</p>
+      <p class="blurb">
+        The Syndicate holds the sky-city. Fight from the landing terrace through
+        the market tier and the ruined district, restore the great span, and
+        take the temple.
+      </p>
+      <button class="btn" id="startBtn">Enter the Expanse</button>
+      <div class="controls">
+        <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</div>
+        <div><kbd>Mouse</kbd> Look &nbsp; <kbd>LMB</kbd> Fire &nbsp; <kbd>RMB</kbd> Aim</div>
+        <div><kbd>Shift</kbd> Sprint &nbsp; <kbd>Ctrl</kbd> Crouch / Slide</div>
+        <div><kbd>Space</kbd> Jump &amp; mantle &nbsp; <kbd>R</kbd> Reload</div>
+        <div><kbd>Q</kbd><kbd>E</kbd> Lean &nbsp; <kbd>F1</kbd> Perf &nbsp; <kbd>Esc</kbd> Pause</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pauseMenu" class="screen hidden">
+    <div class="panel">
+      <h2>Paused</h2>
+      <div class="settings">
+        <label>
+          <span>Look sensitivity</span>
+          <input type="range" id="setSensitivity" min="0.2" max="3" step="0.05" />
+          <output id="setSensitivityVal">1.00</output>
+        </label>
+        <label>
+          <span>Field of view</span>
+          <input type="range" id="setFov" min="60" max="110" step="1" />
+          <output id="setFovVal">76°</output>
+        </label>
+        <label>
+          <span>Volume</span>
+          <input type="range" id="setVolume" min="0" max="1" step="0.02" />
+          <output id="setVolumeVal">65%</output>
+        </label>
+        <label>
+          <span>Quality</span>
+          <select id="setQuality">
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="ultra">Ultra</option>
+          </select>
+          <output class="note">reloads</output>
+        </label>
+        <label class="check">
+          <span>Invert vertical look</span>
+          <input type="checkbox" id="setInvert" />
+        </label>
+        <label class="check">
+          <span>Show performance</span>
+          <input type="checkbox" id="setPerf" />
+        </label>
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="resumeBtn">Resume</button>
+        <button class="btn ghost" id="restartBtn">Restart mission</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="debrief" class="screen hidden">
+    <div class="panel">
+      <h1 id="debriefTitle" class="win">ELYSIUM PRIME SECURED</h1>
+      <div id="debriefBody"></div>
+      <button class="btn" id="againBtn">Run it again</button>
+    </div>
+  </div>
+
+  <!-- The import map is injected by a classic script rather than written
+       inline, so it can point at a local copy of Three.js when one is present.
+       Classic scripts run before any module is fetched, which is the only
+       requirement for an import map to take effect.
+
+         index.html               -> Three.js from the CDN (default)
+         index.html?three=local   -> ./vendor, populated by tools/fetch-three.mjs
+
+       The single-file build in dist/ inlines Three.js entirely and needs
+       neither. -->
+  <script id="importmap-boot">
+    (function () {
+      var local = new URLSearchParams(location.search).get('three') === 'local';
+      var base = local
+        ? './vendor/'
+        : 'https://unpkg.com/three@0.180.0/';
+      var map = {
+        imports: {
+          'three': base + 'build/three.module.js',
+          'three/addons/': base + (local ? 'addons/' : 'examples/jsm/')
+        }
+      };
+      var el = document.createElement('script');
+      el.type = 'importmap';
+      el.textContent = JSON.stringify(map);
+      document.currentScript.parentNode.insertBefore(el, document.currentScript);
+    })();
+  </script>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
