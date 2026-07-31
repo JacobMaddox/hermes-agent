@@ -14,7 +14,7 @@ const STAGES = [
   {
     id: 'landing',
     title: 'Secure the Landing',
-    sub: 'Neutralise the terrace patrol',
+    sub: 'Neutralise the Void patrol',
     stage: 'STAGE 1 / 4',
     type: 'clear',
     district: 'landing'
@@ -30,7 +30,7 @@ const STAGES = [
   {
     id: 'span',
     title: 'Restore the Great Span',
-    sub: 'Destroy the three aether beacons',
+    sub: 'Destroy the three Void Anchors',
     stage: 'STAGE 3 / 4',
     type: 'beacons',
     district: 'ruins'
@@ -159,7 +159,7 @@ export class GameSystem {
           patrol: this._patrolRing(DISTRICTS.ruins, 18)
         });
         for (const b of world.beacons) {
-          if (b.alive) this.markers.push({ position: b.pos, label: 'Beacon', colour: 'rgba(255,90,50,0.95)' });
+          if (b.alive) this.markers.push({ position: b.pos, label: 'Void Anchor', colour: 'rgba(190,80,255,0.95)' });
         }
         break;
 
@@ -199,16 +199,16 @@ export class GameSystem {
     const world = this.ctx.get('world');
     const left = world.aliveBeacons;
     this.markers = this.markers.filter((m) => {
-      if (m.label !== 'Beacon') return true;
+      if (m.label !== 'Void Anchor') return true;
       return world.beacons.some((b) => b.alive && b.pos.equals(m.position));
     });
     if (left > 0) {
       this.ctx.bus.emit('toast', {
-        text: `Beacon down — ${left} remaining`, duration: 2.2
+        text: `Void Anchor down — ${left} remaining`, duration: 2.2
       });
     } else {
       world.deploySpan();
-      this.ctx.bus.emit('toast', { text: 'All beacons down', duration: 2.5 });
+      this.ctx.bus.emit('toast', { text: 'All Void Anchors down', duration: 2.5 });
       this._pendingAdvance = 2.4;
     }
   }
@@ -216,7 +216,7 @@ export class GameSystem {
   _onPlayerDeath() {
     this._deaths++;
     this._respawnT = 2.6;
-    this.ctx.bus.emit('toast', { text: 'Integrity failure — reinitialising', duration: 2.4 });
+    this.ctx.bus.emit('toast', { text: 'Augment failure — Sentinel reinitialising', duration: 2.4 });
   }
 
   _win() {
@@ -299,7 +299,6 @@ export class GameSystem {
     this._stageT += dt;
 
     this._updatePickups(dt);
-    this._updateAudioSpace(player);
     this._updateWaypoint(player);
 
     if (this._respawnT > 0) {
@@ -355,23 +354,6 @@ export class GameSystem {
         break;
       }
     }
-  }
-
-  // Reverb space follows the player between districts.
-  _updateAudioSpace(player) {
-    const audio = this.ctx.tryGet('audio');
-    if (!audio || !audio.enabled) return;
-    if (this.ctx.time.frame % 30 !== 0) return;
-
-    const p = player.position;
-    let space = 'open';
-    const inside = (D, pad = 4) =>
-      Math.abs(p.x - D.x) < D.w / 2 + pad && Math.abs(p.z - D.z) < D.d / 2 + pad;
-
-    if (inside(DISTRICTS.vaults, 2) && p.y < DISTRICTS.vaults.y + 7) space = 'vault';
-    else if (inside(DISTRICTS.temple, 0) && p.y > DISTRICTS.temple.y - 2) space = 'temple';
-    else if (inside(DISTRICTS.market, 0)) space = 'street';
-    audio.setSpace(space);
   }
 
   // Screen-space waypoint: the single most valuable navigation aid once the

@@ -6,7 +6,9 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { GradeShader } from './grade.js';
+import { GodRayShader } from './godrays.js';
 import { scratch } from '../core/loop.js';
+import { clamp, damp } from '../core/rng.js';
 
 // Objects on LAYER_VIEWMODEL are drawn by a second camera in a second render
 // pass with the depth buffer cleared, so the first-person weapon can never
@@ -207,6 +209,17 @@ export class RenderSystem {
       this.bloom = bloom;
     }
 
+    // God rays sit before tone mapping, where the sky is still genuinely
+    // brighter than 1.0 and the threshold can pick it out. After OutputPass
+    // everything is clamped and the shafts have nothing to grab.
+    if (q.volumetrics) {
+      const rays = new ShaderPass(GodRayShader);
+      rays.uniforms.uSunScreen.value = new THREE.Vector2(0.5, 0.5);
+      rays.uniforms.uTint.value = new THREE.Color(1.0, 0.92, 0.78);
+      composer.addPass(rays);
+      this.godRays = rays;
+    }
+
     composer.addPass(new OutputPass());
 
     const grade = new ShaderPass(GradeShader);
@@ -347,8 +360,40 @@ export class RenderSystem {
     if (this.grade) this.grade.uniforms.uFlash.value = v;
   }
 
+  // Project the sun to screen space and fade the shafts in only when it is
+  // actually in front of the camera and roughly on screen. Off-screen the pass
+  // early-outs in the shader, so this is also the performance control.
+  _updateGodRays(dt) {
+    const rays = this.godRays;
+    if (!rays) return;
+    const basis = this._shadowBasis;
+    if (!basis) return;
+
+    const cam = this.camera;
+    const sunPos = scratch.v0.copy(basis.dir).multiplyScalar(4000).add(cam.position);
+    const proj = scratch.v1.copy(sunPos).project(cam);
+
+    const fwd = cam.getWorldDirection(scratch.v2);
+    const behind = fwd.dot(basis.dir) <= 0.05;
+
+    const sx = proj.x * 0.5 + 0.5;
+    const sy = -proj.y * 0.5 + 0.5;
+    // Ramp down as the sun leaves the frame rather than cutting at the edge.
+    const off = Math.max(
+      Math.max(0, Math.abs(proj.x) - 1) , Math.max(0, Math.abs(proj.y) - 1)
+    );
+    const onScreen = clamp(1 - off / 0.6, 0, 1);
+    const target = behind ? 0 : onScreen;
+
+    this._raysT = damp(this._raysT || 0, target, 3.5, dt);
+    rays.uniforms.uSunScreen.value.set(sx, sy);
+    rays.uniforms.uIntensity.value = this._raysT * 0.55;
+    rays.uniforms.uAspect.value = cam.aspect;
+  }
+
   update(dt) {
     this._updateShadows();
+    this._updateGodRays(dt);
     this._updateDynamicResolution();
     if (this.grade) {
       this.grade.uniforms.uTime.value = this.ctx.time.elapsed;

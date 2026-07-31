@@ -8,6 +8,7 @@ import { RenderSystem } from './render/render.js';
 import { MaterialSystem } from './materials/materials.js';
 import { SkySystem } from './sky/sky.js';
 import { WorldSystem } from './world/world.js';
+import { ZoneSystem } from './world/zones.js';
 import { PhysicsSystem } from './physics/physics.js';
 import { PlayerSystem } from './player/player.js';
 import { WeaponSystem } from './weapons/weapons.js';
@@ -78,6 +79,7 @@ async function boot() {
   const materials = ctx.register('materials', new MaterialSystem());
   const sky = ctx.register('sky', new SkySystem());
   const world = ctx.register('world', new WorldSystem());
+  const zones = ctx.register('zones', new ZoneSystem());
   const physics = ctx.register('physics', new PhysicsSystem());
   const player = ctx.register('player', new PlayerSystem());
   const weapons = ctx.register('weapons', new WeaponSystem());
@@ -89,10 +91,10 @@ async function boot() {
 
   // Bring each system up one at a time, letting the browser paint the loading
   // bar between them.
-  const order = ['render', 'materials', 'sky', 'world', 'physics', 'player',
+  const order = ['render', 'materials', 'sky', 'world', 'zones', 'physics', 'player',
     'weapons', 'fx', 'ai', 'audio', 'ui', 'game'];
   const stageOf = {
-    render: 0, materials: 1, sky: 1, world: 2, physics: 2,
+    render: 0, materials: 1, sky: 1, world: 2, zones: 2, physics: 2,
     player: 4, weapons: 4, fx: 4, ai: 3, audio: 4, ui: 4, game: 4
   };
 

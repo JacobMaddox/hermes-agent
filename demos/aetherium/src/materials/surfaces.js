@@ -64,6 +64,7 @@ export const SURFACES = {
   marble: {
     tile: 3.0,
     metalness: 0.02,
+    macro: 0.22, macroScale: 0.06,
     sample(u, v, noise, out) {
       const vein = veins(noise, u, v, 4.5, 0.22, 4);
       const grain = detail(noise, u, v, 26, 26);
@@ -89,6 +90,7 @@ export const SURFACES = {
   marbleFloor: {
     tile: 4.0,
     metalness: 0.02,
+    macro: 0.3, macroScale: 0.045,
     sample(u, v, noise, out) {
       // Large square tiles with a chamfered joint and per-tile colour drift.
       const m = masonry(u, v, 4, 4, 0.012);
@@ -119,6 +121,7 @@ export const SURFACES = {
   sandstone: {
     tile: 2.5,
     metalness: 0.0,
+    macro: 0.26, macroScale: 0.055,
     sample(u, v, noise, out) {
       const strata = noise.tiling(u * 1.2, v * 7.5, 7, 4);
       const pit = detail(noise, u, v, 40, 40);
@@ -144,6 +147,7 @@ export const SURFACES = {
     // reveals a bubbled cavity structure up close.
     tile: 3.5,
     metalness: 0.0,
+    macro: 0.3, macroScale: 0.04,
     sample(u, v, noise, out) {
       const big = noise.tiling(u * 2.2, v * 2.2, 2, 4);
       const bubbles = noise.tiling(u * 14, v * 14, 14, 2);
@@ -166,6 +170,7 @@ export const SURFACES = {
   brick: {
     tile: 2.0,
     metalness: 0.0,
+    macro: 0.2, macroScale: 0.07,
     sample(u, v, noise, out) {
       const m = masonry(u, v, 6, 12, 0.05);
       const tint = hashUnit(m.brickId);
@@ -195,6 +200,7 @@ export const SURFACES = {
   gold: {
     tile: 2.0,
     metalness: 1.0,
+    macro: 0.1, macroScale: 0.09,
     sample(u, v, noise, out) {
       // Hammered leaf: shallow dimples, micro-scratches, tarnish in the pits.
       const dimple = noise.tiling(u * 11, v * 11, 11, 2);
@@ -226,6 +232,7 @@ export const SURFACES = {
   bronze: {
     tile: 2.0,
     metalness: 1.0,
+    macro: 0.14, macroScale: 0.09,
     sample(u, v, noise, out) {
       const patinaN = noise.tiling(u * 5, v * 5, 5, 4);
       const drip = noise.tiling(u * 3, v * 14, 3, 3);
@@ -249,6 +256,7 @@ export const SURFACES = {
   darkMetal: {
     tile: 1.5,
     metalness: 1.0,
+    macro: 0.12, macroScale: 0.1,
     sample(u, v, noise, out) {
       // Brushed steel plate with panel lines and rivets.
       const brush = noise.tiling(u * 140, v * 5, 140, 2);
@@ -274,6 +282,7 @@ export const SURFACES = {
   dronePlate: {
     tile: 1.0,
     metalness: 0.95,
+    macro: 0.0, macroScale: 0.1,
     sample(u, v, noise, out) {
       // Syndicate armour: tight hex-ish faceting, dark anodised finish.
       const facet = noise.tiling(u * 16, v * 16, 16, 1);
@@ -298,6 +307,7 @@ export const SURFACES = {
   gunmetal: {
     tile: 0.6,
     metalness: 0.9,
+    macro: 0.0, macroScale: 0.1,
     sample(u, v, noise, out) {
       // The player's rifle body: fine bead-blast, machined edge polish.
       const blast = detail(noise, u, v, 90, 90);
@@ -320,6 +330,7 @@ export const SURFACES = {
   foliage: {
     tile: 1.0,
     metalness: 0.0,
+    macro: 0.16, macroScale: 0.1,
     sample(u, v, noise, out) {
       const clump = noise.tiling(u * 6, v * 6, 6, 4);
       const leaf = noise.tiling(u * 26, v * 26, 26, 2);
@@ -343,6 +354,7 @@ export const SURFACES = {
   banner: {
     tile: 1.0,
     metalness: 0.0,
+    macro: 0.1, macroScale: 0.14,
     sample(u, v, noise, out) {
       // Woven cloth: visible warp/weft at close range, dye variation at range.
       const warp = Math.sin(u * TAU * 90) * 0.5 + 0.5;
@@ -368,6 +380,7 @@ export const SURFACES = {
   wood: {
     tile: 1.5,
     metalness: 0.0,
+    macro: 0.12, macroScale: 0.12,
     sample(u, v, noise, out) {
       // Ring grain: a low-frequency field pushed through fract() gives rings
       // that bend around knots instead of running as straight stripes.
@@ -393,6 +406,7 @@ export const SURFACES = {
   rubble: {
     tile: 2.0,
     metalness: 0.0,
+    macro: 0.26, macroScale: 0.06,
     sample(u, v, noise, out) {
       const chunks = noise.tiling(u * 10, v * 10, 10, 3);
       const dust = detail(noise, u, v, 50, 50);

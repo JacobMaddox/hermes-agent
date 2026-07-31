@@ -53,10 +53,11 @@ export function buildRifle(mats) {
 
   // ── Receiver ──────────────────────────────────────────────────────────
   put(boxGeo(0.085, 0.115, 0.44, 0.35), body, 0, 0, -0.10);
-  put(boxGeo(0.072, 0.03, 0.40, 0.3), dark, 0, 0.072, -0.11);
-  // Picatinny-style rail teeth.
+  put(boxGeo(0.072, 0.03, 0.40, 0.3), dark, 0, 0.060, -0.11);
+  // Picatinny-style rail teeth. Kept clear of the optic's sight line — see the
+  // APERTURE_R note below; anything above y 0.076 under the optic obstructs it.
   for (let i = 0; i < 7; i++) {
-    put(boxGeo(0.078, 0.012, 0.016, 0.2), dark, 0, 0.09, -0.26 + i * 0.05);
+    put(boxGeo(0.078, 0.012, 0.016, 0.2), dark, 0, 0.068, -0.26 + i * 0.05);
   }
   put(boxGeo(0.006, 0.045, 0.10, 0.2), dark, 0.045, 0.012, -0.03);
   put(cylGeo(0.009, 0.009, 0.07, 6, 0.2), dark, 0.055, 0.05, 0.045, 0, 0, Math.PI / 2);
@@ -101,7 +102,7 @@ export function buildRifle(mats) {
   const BEZEL_R = 0.029;
 
   // Mount block, below the sight line.
-  put(boxGeo(0.044, 0.028, 0.11, 0.2), dark, 0, 0.10, -0.115);
+  put(boxGeo(0.044, 0.022, 0.11, 0.2), dark, 0, 0.058, -0.115);
 
   // The optic needs its own material because it is the one part of the weapon
   // that must render from both sides — you see the outside of the tube, and
@@ -114,12 +115,12 @@ export function buildRifle(mats) {
   // Tube: open at both ends, so the sight line passes straight through.
   const tube = cylGeo(BEZEL_R * 0.88, BEZEL_R * 0.88, 0.106, 20, 0.2, true);
   tube.rotateX(Math.PI / 2);
-  statics.push({ geometry: tube, material: opticMat, matrix: at(0, 0.128, -0.115) });
+  statics.push({ geometry: tube, material: opticMat, matrix: at(0, 0.095, -0.115) });
 
   // Ring bezels front and rear — an annulus, not a plate.
   for (const z of [-0.168, -0.062]) {
     const ring = new THREE.RingGeometry(APERTURE_R, BEZEL_R, 24);
-    statics.push({ geometry: ring, material: opticMat, matrix: at(0, 0.128, z) });
+    statics.push({ geometry: ring, material: opticMat, matrix: at(0, 0.095, z) });
   }
 
   // ── Hands ─────────────────────────────────────────────────────────────
@@ -177,7 +178,7 @@ export function buildRifle(mats) {
       color: 0x2a6fa8, transparent: true, opacity: 0.16,
       blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false
     }),
-    0, 0.128, -0.055
+    0, 0.095, -0.055
   );
 
   // Floating reticle, only visible while aiming.
@@ -188,7 +189,7 @@ export function buildRifle(mats) {
       blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
       toneMapped: false
     }),
-    0, 0.128, -0.048
+    0, 0.095, -0.048
   );
   reticle.renderOrder = 30;
 
@@ -199,7 +200,7 @@ export function buildRifle(mats) {
 
   // The point the rig aligns to screen centre when aiming.
   const aimPoint = new THREE.Object3D();
-  aimPoint.position.set(0, 0.128, -0.11);
+  aimPoint.position.set(0, 0.095, -0.11);
   group.add(aimPoint);
 
   group.traverse((o) => { o.layers.set(LAYER_VIEWMODEL); });

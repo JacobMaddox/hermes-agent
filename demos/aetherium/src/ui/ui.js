@@ -70,7 +70,7 @@ export class UiSystem {
       this._hitHead = e.headshot;
     });
     bus.on('actor:death', (e) => this.addKill(e.label || 'Drone', e.headshot));
-    bus.on('beacon:destroyed', () => this.addKill('Aether Beacon', false, true));
+    bus.on('beacon:destroyed', () => this.addKill('Void Anchor', false, true));
     bus.on('objective:advance', (e) => this.setObjective(e.title, e.sub, e.stage));
     bus.on('toast', (e) => this.toast(e.text, e.duration));
     bus.on('pointerlock:error', () =>
@@ -124,12 +124,12 @@ export class UiSystem {
     const mm = Math.floor(timeSec / 60);
     const ss = Math.floor(timeSec % 60).toString().padStart(2, '0');
 
-    this.el.debriefTitle.textContent = won ? 'ELYSIUM PRIME SECURED' : 'MISSION FAILED';
+    this.el.debriefTitle.textContent = won ? 'ELYSIUM PRIME SECURED' : 'SENTINEL DOWN';
     this.el.debriefTitle.className = won ? 'win' : 'lose';
     this.el.debriefBody.innerHTML = `
       <div class="stat-grid">
         <div><span>Time</span><strong>${mm}:${ss}</strong></div>
-        <div><span>Drones destroyed</span><strong>${stats.kills}</strong></div>
+        <div><span>Syndicate destroyed</span><strong>${stats.kills}</strong></div>
         <div><span>Headshots</span><strong>${stats.headshots}</strong></div>
         <div><span>Accuracy</span><strong>${acc}%</strong></div>
         <div><span>Shots fired</span><strong>${stats.shotsFired}</strong></div>
@@ -164,7 +164,7 @@ export class UiSystem {
   addKill(label, headshot, isObject = false) {
     const row = document.createElement('div');
     row.className = 'kill-row';
-    row.innerHTML = `<span class="k-src">You</span>` +
+    row.innerHTML = `<span class="k-src">VALTOR</span>` +
       `<span class="k-icon">${headshot ? '⌖' : isObject ? '◈' : '✕'}</span>` +
       `<span class="k-tgt">${label}</span>`;
     this.el.killFeed.appendChild(row);
@@ -385,7 +385,7 @@ export class UiSystem {
         if (!known) continue;
         const [ax, ay] = project(a.position.x, a.position.z);
         const dy = a.position.y - player.position.y;
-        c.fillStyle = a.state === 'combat' ? 'rgba(255,70,50,0.95)' : 'rgba(255,150,60,0.8)';
+        c.fillStyle = a.state === 'combat' ? 'rgba(214,80,255,0.95)' : 'rgba(170,110,255,0.8)';
         c.beginPath();
         c.arc(ax, ay, 3.4, 0, Math.PI * 2);
         c.fill();

@@ -559,6 +559,39 @@ kbd {
 
 /* ── Toast and perf ─────────────────────────────────────────────────── */
 
+/* ── District card ──────────────────────────────────────────────────── */
+
+.district-card {
+  position: absolute;
+  bottom: 32%;
+  left: 50%;
+  transform: translateX(-50%) translateY(10px);
+  font-size: 1.5rem;
+  font-weight: 200;
+  letter-spacing: 0.42em;
+  text-transform: uppercase;
+  color: rgba(226, 240, 255, 0.92);
+  text-shadow: 0 2px 24px rgba(0, 0, 0, 0.8);
+  opacity: 0;
+  transition: opacity 0.9s ease-out, transform 0.9s ease-out;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.district-card::after {
+  content: '';
+  display: block;
+  height: 1px;
+  margin-top: 0.6rem;
+  background: linear-gradient(90deg,
+    transparent, rgba(255, 216, 138, 0.7), transparent);
+}
+
+.district-card.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
 .toast {
   position: absolute;
   bottom: 22%;

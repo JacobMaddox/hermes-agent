@@ -266,7 +266,11 @@ async function walkTo(label, from, to) {
 // balustrades are load-bearing here: walking at the wrong offset runs into one
 // and stops, which is correct behaviour and not what this test is measuring.
 await walkTo('landing stair', [0, 14.4, 70], [0, 6.2, 55]);
-await walkTo('market -> ruins bridge', [30, 7.2, 11], [53, 11, -8]);
+// Aimed at the far end of the deck rather than a point beyond it: the walk is
+// a straight line, and a target off the bridge axis steers the player into a
+// parapet three quarters of the way across — which is the parapet doing its
+// job, not a traversal failure.
+await walkTo('market -> ruins bridge', [30, 7.2, 11], [51, 10.5, -6]);
 await walkTo('ruins -> pier bridge', [53, 11.2, -35], [44, 13, -50]);
 await walkTo('temple grand stair', [0, 14.4, -43], [0, 26.2, -61]);
 await walkTo('vault descent stair', [-31, 6.4, 13.5], [-56, -6, 13.5]);

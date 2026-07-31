@@ -52,7 +52,11 @@ const SHOTS = [
   ['16-temple-stair', 0, 15.2, -43, 0, 0.20],
   ['17-temple-dome', 0, 27.2, -57, 0, 0.16],
   ['18-temple-sanctum', 0, 27.2, -70, 0, 0.04],
-  ['19-overlook', 22, 27.2, -64, -0.75, -0.20]
+  ['19-overlook', 22, 27.2, -64, -0.75, -0.20],
+  // Looking into the sun through the colonnade: the god-ray shot.
+  ['20-godrays', -12, 15.2, 96, -0.56, 0.12],
+  // Aim-down-sights, to confirm the optic has a usable sight picture.
+  ['21-ads', 0, 15.2, 94, 0.06, -0.01, { ads: true }]
 ];
 
 const shots = ONLY
@@ -92,8 +96,8 @@ await page.waitForFunction(() => !!window.AETHERIUM, null, { timeout: 180000 });
 await page.click('#startBtn');
 await page.waitForTimeout(1200);
 
-for (const [name, x, y, z, yaw, pitch] of shots) {
-  await page.evaluate(([x, y, z, yaw, pitch]) => {
+for (const [name, x, y, z, yaw, pitch, opts] of shots) {
+  await page.evaluate(([x, y, z, yaw, pitch, o]) => {
     const A = window.AETHERIUM;
     const p = A.ctx.get('player');
     p.respawn({ x, y, z, clone: () => ({ x, y, z }) });
@@ -104,7 +108,13 @@ for (const [name, x, y, z, yaw, pitch] of shots) {
     p.locked = true;
     // Freeze the AI so a drone does not wander into the middle of every shot.
     A.ctx.get('ai').actors.forEach((a) => { a.velocity.set(0, 0, 0); });
-  }, [x, y, z, yaw, pitch]);
+
+    // Hold the aimed pose for sight-picture shots.
+    const w = A.ctx.get('weapons');
+    p.setAds(!!(o && o.ads));
+    w._adsT = (o && o.ads) ? 1 : 0;
+    w.update(0.016);
+  }, [x, y, z, yaw, pitch, opts || null]);
 
   // Wait for the player to actually land and for the shadow frustum to
   // re-snap. A fixed sleep is not enough on a software rasteriser running at

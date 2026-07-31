@@ -29,6 +29,8 @@ export class MaterialSystem {
     const size = ctx.quality.textureSize;
     this._noise = new Noise2D(ctx.rng.fork(0x5eed).seed);
 
+    this._buildMacroVariation(ctx.quality.textureSize >= 512 ? 256 : 128);
+
     const names = Object.keys(SURFACES);
     for (let i = 0; i < names.length; i++) {
       const name = names[i];
@@ -42,6 +44,67 @@ export class MaterialSystem {
     }
 
     this._buildSpecials();
+  }
+
+  // Macro variation.
+  //
+  // A tiling texture repeated across a 68-metre market floor reads as a tiling
+  // texture, however good the tile is — the eye locks onto the period long
+  // before it notices the detail. The standard fix is to modulate albedo with a
+  // second, much lower-frequency field sampled at a different scale, so the
+  // repeat never lines up with itself. It costs one extra texture fetch and it
+  // is the single most effective thing available here.
+  //
+  // Injected through onBeforeCompile rather than baked, precisely because it
+  // has to vary at a scale *larger* than the tile: baking it in would make it
+  // repeat along with everything else and achieve nothing.
+  _buildMacroVariation(size = 256) {
+    const noise = new Noise2D(this.ctx.rng.fork(0xac0f).seed);
+    const data = new Uint8Array(size * size * 4);
+    const inv = 1 / size;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const n = noise.tiling(x * inv * 3, y * inv * 3, 3, 4, 2.0, 0.6);
+        const v = clamp(0.5 + n * 0.5, 0, 1);
+        const o = (y * size + x) * 4;
+        data[o] = data[o + 1] = data[o + 2] = v * 255;
+        data[o + 3] = 255;
+      }
+    }
+    const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.generateMipmaps = true;
+    tex.needsUpdate = true;
+    this._macroTex = tex;
+    return tex;
+  }
+
+  _applyMacroVariation(mat, strength, scale) {
+    const tex = this._macroTex;
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uMacro = { value: tex };
+      shader.uniforms.uMacroScale = { value: scale };
+      shader.uniforms.uMacroStrength = { value: strength };
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>',
+          '#include <common>\n' +
+          'uniform sampler2D uMacro;\n' +
+          'uniform float uMacroScale;\n' +
+          'uniform float uMacroStrength;')
+        .replace('#include <map_fragment>',
+          '#include <map_fragment>\n' +
+          '#ifdef USE_MAP\n' +
+          '  {\n' +
+          '    float macro = texture2D(uMacro, vMapUv * uMacroScale).r;\n' +
+          '    diffuseColor.rgb *= 1.0 + (macro - 0.5) * 2.0 * uMacroStrength;\n' +
+          '  }\n' +
+          '#endif');
+    };
+    // Materials with different injected code must not share a compiled
+    // program, and Three keys its cache on this string.
+    mat.customProgramCacheKey = () => `macro:${strength.toFixed(2)}:${scale}`;
   }
 
   _bakeSurface(name, def, size) {
@@ -91,6 +154,11 @@ export class MaterialSystem {
     // aoMap defaults to the second UV set in some pipelines; every mesh here
     // carries a single UV channel, so pin it explicitly.
     ormTex.channel = 0;
+
+    // Large flat surfaces need the most help; a column or a crate never shows
+    // enough of itself at once for the repeat to register.
+    const macro = def.macro !== undefined ? def.macro : 0.18;
+    if (macro > 0) this._applyMacroVariation(mat, macro, def.macroScale || 0.07);
 
     this.textures.set(name, { albedo: albedoTex, normal: normalTex, orm: ormTex });
     this.materials.set(name, mat);
@@ -220,17 +288,20 @@ export class MaterialSystem {
       opacity: 0.88
     }));
 
+    // Void Syndicate dark energy. Violet against a warm marble-and-gold world
+    // is both the faction's visual language and the reason you can pick a
+    // hostile out of the scene at range.
     add('hostile', new THREE.MeshStandardMaterial({
-      color: 0x501008,
-      emissive: 0xff3a12,
+      color: 0x2e0a50,
+      emissive: 0xc040ff,
       emissiveIntensity: 3.2,
       roughness: 0.3,
       metalness: 0.0
     }));
 
     add('beacon', new THREE.MeshStandardMaterial({
-      color: 0x40120c,
-      emissive: 0xff5522,
+      color: 0x2a0c40,
+      emissive: 0xb040ff,
       emissiveIntensity: 2.4,
       roughness: 0.35,
       metalness: 0.2

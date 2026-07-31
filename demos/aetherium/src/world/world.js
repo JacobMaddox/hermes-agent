@@ -542,7 +542,7 @@ export class WorldSystem {
     ring.position.y = 2.6;
     group.add(ring);
 
-    const light = new THREE.PointLight(0xff5522, 3.0, 20, 1.8);
+    const light = new THREE.PointLight(0xb040ff, 3.0, 20, 1.8);
     light.position.y = 2.6;
     group.add(light);
 

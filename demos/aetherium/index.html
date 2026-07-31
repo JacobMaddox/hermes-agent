@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Aetherium Odyssey — Elysium Prime</title>
+  <title>Aetherium Wars — Elysium Prime</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -37,7 +37,7 @@
 
     <div class="hud-bottom">
       <div class="stat hp">
-        <div class="stat-label">Integrity</div>
+        <div class="stat-label">Augment Integrity</div>
         <div class="stat-row">
           <div id="hpValue" class="stat-value">100</div>
           <div class="bar"><div id="hpFill" class="fill" style="width:100%"></div></div>
@@ -55,14 +55,18 @@
       </div>
     </div>
 
+    <!-- Named on first entry to a district. The archipelago never loads
+         between areas, so this is the only thing that marks the crossing. -->
+    <div id="districtCard" class="district-card"></div>
+
     <div id="toast" class="toast"></div>
     <pre id="perf" class="perf hidden"></pre>
   </div>
 
   <div id="loading" class="screen">
     <div class="panel">
-      <h1>AETHERIUM ODYSSEY</h1>
-      <p class="tagline">Elysium Prime</p>
+      <h1>AETHERIUM WARS</h1>
+      <p class="tagline">Elysium Prime — Concord Sentinels</p>
       <div class="load-track"><div id="loadBar" class="load-bar"></div></div>
       <p id="loadLabel" class="load-label">Booting renderer</p>
       <p class="load-note">
@@ -74,12 +78,14 @@
 
   <div id="overlay" class="screen hidden">
     <div class="panel">
-      <h1>AETHERIUM ODYSSEY</h1>
-      <p class="tagline">Elysium Prime — Archipelago Campaign</p>
+      <h1>AETHERIUM WARS</h1>
+      <p class="tagline">Elysium Prime — Concord Sentinels</p>
       <p class="blurb">
-        The Syndicate holds the sky-city. Fight from the landing terrace through
-        the market tier and the ruined district, restore the great span, and
-        take the temple.
+        <strong>Commander Jace Valtor</strong> — the Void Syndicate holds the
+        sky-city and its Anchors are bleeding dark energy into the Expanse.
+        Fight from the landing terrace through the market tier and the ruined
+        district, bring down the Anchors to restore the great span, and take
+        the temple.
       </p>
       <button class="btn" id="startBtn">Enter the Expanse</button>
       <div class="controls">

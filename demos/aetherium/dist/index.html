@@ -6,7 +6,7 @@
        Three.js: inlined (works fully offline) -->
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Aetherium Odyssey — Elysium Prime</title>
+  <title>Aetherium Wars — Elysium Prime</title>
   <style>
 /* Aetherium Odyssey — UI.
    The glass-panel look from round 1 carried forward and extended to a full
@@ -569,6 +569,39 @@ kbd {
 
 /* ── Toast and perf ─────────────────────────────────────────────────── */
 
+/* ── District card ──────────────────────────────────────────────────── */
+
+.district-card {
+  position: absolute;
+  bottom: 32%;
+  left: 50%;
+  transform: translateX(-50%) translateY(10px);
+  font-size: 1.5rem;
+  font-weight: 200;
+  letter-spacing: 0.42em;
+  text-transform: uppercase;
+  color: rgba(226, 240, 255, 0.92);
+  text-shadow: 0 2px 24px rgba(0, 0, 0, 0.8);
+  opacity: 0;
+  transition: opacity 0.9s ease-out, transform 0.9s ease-out;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.district-card::after {
+  content: '';
+  display: block;
+  height: 1px;
+  margin-top: 0.6rem;
+  background: linear-gradient(90deg,
+    transparent, rgba(255, 216, 138, 0.7), transparent);
+}
+
+.district-card.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
 .toast {
   position: absolute;
   bottom: 22%;
@@ -647,7 +680,7 @@ kbd {
 
     <div class="hud-bottom">
       <div class="stat hp">
-        <div class="stat-label">Integrity</div>
+        <div class="stat-label">Augment Integrity</div>
         <div class="stat-row">
           <div id="hpValue" class="stat-value">100</div>
           <div class="bar"><div id="hpFill" class="fill" style="width:100%"></div></div>
@@ -665,14 +698,18 @@ kbd {
       </div>
     </div>
 
+    <!-- Named on first entry to a district. The archipelago never loads
+         between areas, so this is the only thing that marks the crossing. -->
+    <div id="districtCard" class="district-card"></div>
+
     <div id="toast" class="toast"></div>
     <pre id="perf" class="perf hidden"></pre>
   </div>
 
   <div id="loading" class="screen">
     <div class="panel">
-      <h1>AETHERIUM ODYSSEY</h1>
-      <p class="tagline">Elysium Prime</p>
+      <h1>AETHERIUM WARS</h1>
+      <p class="tagline">Elysium Prime — Concord Sentinels</p>
       <div class="load-track"><div id="loadBar" class="load-bar"></div></div>
       <p id="loadLabel" class="load-label">Booting renderer</p>
       <p class="load-note">
@@ -684,12 +721,14 @@ kbd {
 
   <div id="overlay" class="screen hidden">
     <div class="panel">
-      <h1>AETHERIUM ODYSSEY</h1>
-      <p class="tagline">Elysium Prime — Archipelago Campaign</p>
+      <h1>AETHERIUM WARS</h1>
+      <p class="tagline">Elysium Prime — Concord Sentinels</p>
       <p class="blurb">
-        The Syndicate holds the sky-city. Fight from the landing terrace through
-        the market tier and the ruined district, restore the great span, and
-        take the temple.
+        <strong>Commander Jace Valtor</strong> — the Void Syndicate holds the
+        sky-city and its Anchors are bleeding dark energy into the Expanse.
+        Fight from the landing terrace through the market tier and the ruined
+        district, bring down the Anchors to restore the great span, and take
+        the temple.
       </p>
       <button class="btn" id="startBtn">Enter the Expanse</button>
       <div class="controls">
@@ -1554,6 +1593,97 @@ const GradeShader = {
 return { GradeShader };
 };
 
+__aethModules["src/render/godrays.js"] = function () {
+
+// Volumetric light shafts.
+//
+// A radial blur of the frame's brightest pixels, streaked away from the sun's
+// screen position. It is not real volumetrics — there is no participating
+// medium and no shadow-map sampling along the ray — but it is the effect people
+// mean by "god rays through the colonnade", it costs one pass, and it is
+// entirely self-contained rather than depending on an addon that may move.
+//
+// The pass is a no-op when the sun is behind the camera or off screen, which is
+// most of the time in a level where you spend a lot of it looking away from it.
+
+const GodRayShader = {
+  name: 'GodRayShader',
+
+  uniforms: {
+    tDiffuse: { value: null },
+    uSunScreen: { value: null },     // sun position in [0,1] screen space
+    uIntensity: { value: 0.0 },      // driven by sun visibility; 0 disables
+    uDecay: { value: 0.94 },
+    uDensity: { value: 0.86 },
+    uWeight: { value: 0.26 },
+    uThreshold: { value: 0.80 },
+    uTint: { value: null },
+    uAspect: { value: 1.0 }
+  },
+
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform vec2 uSunScreen;
+    uniform float uIntensity;
+    uniform float uDecay;
+    uniform float uDensity;
+    uniform float uWeight;
+    uniform float uThreshold;
+    uniform vec3 uTint;
+    uniform float uAspect;
+    varying vec2 vUv;
+
+    const int SAMPLES = 24;
+
+    void main() {
+      vec4 base = texture2D(tDiffuse, vUv);
+
+      if (uIntensity <= 0.001) {
+        gl_FragColor = base;
+        return;
+      }
+
+      // March from the fragment toward the sun, accumulating only the parts of
+      // the image bright enough to plausibly be a light source.
+      vec2 delta = (vUv - uSunScreen) * (uDensity / float(SAMPLES));
+      vec2 uv = vUv;
+      float illumination = 1.0;
+      vec3 accum = vec3(0.0);
+
+      for (int i = 0; i < SAMPLES; i++) {
+        uv -= delta;
+        vec3 s = texture2D(tDiffuse, clamp(uv, 0.0, 1.0)).rgb;
+        // Threshold in luma, so a bright sky streaks and a bright white wall
+        // does not.
+        float luma = dot(s, vec3(0.2126, 0.7152, 0.0722));
+        s *= smoothstep(uThreshold, 1.0, luma);
+        accum += s * illumination * uWeight;
+        illumination *= uDecay;
+      }
+
+      accum /= float(SAMPLES);
+
+      // Fade out toward the screen edge nearest the sun so the streaks do not
+      // terminate in a hard line at the frame boundary.
+      vec2 d = (vUv - uSunScreen) * vec2(uAspect, 1.0);
+      float falloff = 1.0 - smoothstep(0.15, 1.25, length(d));
+
+      gl_FragColor = vec4(base.rgb + accum * uTint * uIntensity * falloff, base.a);
+    }
+  `
+};
+
+return { GodRayShader };
+};
+
 __aethModules["src/render/render.js"] = function () {
 const THREE = __ext0;
 const { EffectComposer } = __ext1;
@@ -1563,7 +1693,11 @@ const { ShaderPass } = __ext4;
 const { SMAAPass } = __ext5;
 const { OutputPass } = __ext6;
 const { GradeShader } = __aeth("src/render/grade.js");
+const { GodRayShader } = __aeth("src/render/godrays.js");
 const { scratch } = __aeth("src/core/loop.js");
+const { clamp, damp } = __aeth("src/core/rng.js");
+
+
 
 
 
@@ -1582,6 +1716,9 @@ const { scratch } = __aeth("src/core/loop.js");
 // post, which leaves the weapon looking pasted on.
 const LAYER_WORLD = 0;
 const LAYER_VIEWMODEL = 1;
+
+const VIEWMODEL_FOV_HIP = 58;
+const VIEWMODEL_FOV_ADS = 50;
 
 class RenderSystem {
   constructor(canvas) {
@@ -1642,9 +1779,11 @@ class RenderSystem {
 
     // Viewmodel camera rides the main camera at identity but keeps its own,
     // narrower FOV — the standard trick that stops the weapon fish-eyeing when
-    // the world FOV is wide.
+    // the world FOV is wide. It narrows further while aiming (see
+    // `setViewmodelFov`), because a world that zooms while the weapon does not
+    // reads as the gun growing rather than the sight magnifying.
     const viewCamera = new THREE.PerspectiveCamera(
-      58, window.innerWidth / window.innerHeight, 0.01, 8
+      VIEWMODEL_FOV_HIP, window.innerWidth / window.innerHeight, 0.01, 8
     );
     viewCamera.layers.set(LAYER_VIEWMODEL);
     camera.add(viewCamera);
@@ -1766,6 +1905,17 @@ class RenderSystem {
       );
       composer.addPass(bloom);
       this.bloom = bloom;
+    }
+
+    // God rays sit before tone mapping, where the sky is still genuinely
+    // brighter than 1.0 and the threshold can pick it out. After OutputPass
+    // everything is clamped and the shafts have nothing to grab.
+    if (q.volumetrics) {
+      const rays = new ShaderPass(GodRayShader);
+      rays.uniforms.uSunScreen.value = new THREE.Vector2(0.5, 0.5);
+      rays.uniforms.uTint.value = new THREE.Color(1.0, 0.92, 0.78);
+      composer.addPass(rays);
+      this.godRays = rays;
     }
 
     composer.addPass(new OutputPass());
@@ -1892,6 +2042,13 @@ class RenderSystem {
     this.renderer.toneMappingExposure = v;
   }
 
+  // Driven by the weapon rig as aim-down-sights blends in.
+  setViewmodelFov(fov) {
+    if (Math.abs(this.viewCamera.fov - fov) < 0.01) return;
+    this.viewCamera.fov = fov;
+    this.viewCamera.updateProjectionMatrix();
+  }
+
   // Driven by the player subsystem: damage haze intensity and screen flash.
   setDamageHaze(v) {
     if (this.grade) this.grade.uniforms.uDamage.value = v;
@@ -1901,8 +2058,40 @@ class RenderSystem {
     if (this.grade) this.grade.uniforms.uFlash.value = v;
   }
 
+  // Project the sun to screen space and fade the shafts in only when it is
+  // actually in front of the camera and roughly on screen. Off-screen the pass
+  // early-outs in the shader, so this is also the performance control.
+  _updateGodRays(dt) {
+    const rays = this.godRays;
+    if (!rays) return;
+    const basis = this._shadowBasis;
+    if (!basis) return;
+
+    const cam = this.camera;
+    const sunPos = scratch.v0.copy(basis.dir).multiplyScalar(4000).add(cam.position);
+    const proj = scratch.v1.copy(sunPos).project(cam);
+
+    const fwd = cam.getWorldDirection(scratch.v2);
+    const behind = fwd.dot(basis.dir) <= 0.05;
+
+    const sx = proj.x * 0.5 + 0.5;
+    const sy = -proj.y * 0.5 + 0.5;
+    // Ramp down as the sun leaves the frame rather than cutting at the edge.
+    const off = Math.max(
+      Math.max(0, Math.abs(proj.x) - 1) , Math.max(0, Math.abs(proj.y) - 1)
+    );
+    const onScreen = clamp(1 - off / 0.6, 0, 1);
+    const target = behind ? 0 : onScreen;
+
+    this._raysT = damp(this._raysT || 0, target, 3.5, dt);
+    rays.uniforms.uSunScreen.value.set(sx, sy);
+    rays.uniforms.uIntensity.value = this._raysT * 0.55;
+    rays.uniforms.uAspect.value = cam.aspect;
+  }
+
   update(dt) {
     this._updateShadows();
+    this._updateGodRays(dt);
     this._updateDynamicResolution();
     if (this.grade) {
       this.grade.uniforms.uTime.value = this.ctx.time.elapsed;
@@ -1922,7 +2111,7 @@ class RenderSystem {
   }
 }
 
-return { LAYER_WORLD, LAYER_VIEWMODEL, RenderSystem };
+return { LAYER_WORLD, LAYER_VIEWMODEL, VIEWMODEL_FOV_HIP, VIEWMODEL_FOV_ADS, RenderSystem };
 };
 
 __aethModules["src/materials/surfaces.js"] = function () {
@@ -1993,6 +2182,7 @@ const SURFACES = {
   marble: {
     tile: 3.0,
     metalness: 0.02,
+    macro: 0.22, macroScale: 0.06,
     sample(u, v, noise, out) {
       const vein = veins(noise, u, v, 4.5, 0.22, 4);
       const grain = detail(noise, u, v, 26, 26);
@@ -2018,6 +2208,7 @@ const SURFACES = {
   marbleFloor: {
     tile: 4.0,
     metalness: 0.02,
+    macro: 0.3, macroScale: 0.045,
     sample(u, v, noise, out) {
       // Large square tiles with a chamfered joint and per-tile colour drift.
       const m = masonry(u, v, 4, 4, 0.012);
@@ -2048,6 +2239,7 @@ const SURFACES = {
   sandstone: {
     tile: 2.5,
     metalness: 0.0,
+    macro: 0.26, macroScale: 0.055,
     sample(u, v, noise, out) {
       const strata = noise.tiling(u * 1.2, v * 7.5, 7, 4);
       const pit = detail(noise, u, v, 40, 40);
@@ -2073,6 +2265,7 @@ const SURFACES = {
     // reveals a bubbled cavity structure up close.
     tile: 3.5,
     metalness: 0.0,
+    macro: 0.3, macroScale: 0.04,
     sample(u, v, noise, out) {
       const big = noise.tiling(u * 2.2, v * 2.2, 2, 4);
       const bubbles = noise.tiling(u * 14, v * 14, 14, 2);
@@ -2095,6 +2288,7 @@ const SURFACES = {
   brick: {
     tile: 2.0,
     metalness: 0.0,
+    macro: 0.2, macroScale: 0.07,
     sample(u, v, noise, out) {
       const m = masonry(u, v, 6, 12, 0.05);
       const tint = hashUnit(m.brickId);
@@ -2124,6 +2318,7 @@ const SURFACES = {
   gold: {
     tile: 2.0,
     metalness: 1.0,
+    macro: 0.1, macroScale: 0.09,
     sample(u, v, noise, out) {
       // Hammered leaf: shallow dimples, micro-scratches, tarnish in the pits.
       const dimple = noise.tiling(u * 11, v * 11, 11, 2);
@@ -2155,6 +2350,7 @@ const SURFACES = {
   bronze: {
     tile: 2.0,
     metalness: 1.0,
+    macro: 0.14, macroScale: 0.09,
     sample(u, v, noise, out) {
       const patinaN = noise.tiling(u * 5, v * 5, 5, 4);
       const drip = noise.tiling(u * 3, v * 14, 3, 3);
@@ -2178,6 +2374,7 @@ const SURFACES = {
   darkMetal: {
     tile: 1.5,
     metalness: 1.0,
+    macro: 0.12, macroScale: 0.1,
     sample(u, v, noise, out) {
       // Brushed steel plate with panel lines and rivets.
       const brush = noise.tiling(u * 140, v * 5, 140, 2);
@@ -2203,6 +2400,7 @@ const SURFACES = {
   dronePlate: {
     tile: 1.0,
     metalness: 0.95,
+    macro: 0.0, macroScale: 0.1,
     sample(u, v, noise, out) {
       // Syndicate armour: tight hex-ish faceting, dark anodised finish.
       const facet = noise.tiling(u * 16, v * 16, 16, 1);
@@ -2227,6 +2425,7 @@ const SURFACES = {
   gunmetal: {
     tile: 0.6,
     metalness: 0.9,
+    macro: 0.0, macroScale: 0.1,
     sample(u, v, noise, out) {
       // The player's rifle body: fine bead-blast, machined edge polish.
       const blast = detail(noise, u, v, 90, 90);
@@ -2249,6 +2448,7 @@ const SURFACES = {
   foliage: {
     tile: 1.0,
     metalness: 0.0,
+    macro: 0.16, macroScale: 0.1,
     sample(u, v, noise, out) {
       const clump = noise.tiling(u * 6, v * 6, 6, 4);
       const leaf = noise.tiling(u * 26, v * 26, 26, 2);
@@ -2272,6 +2472,7 @@ const SURFACES = {
   banner: {
     tile: 1.0,
     metalness: 0.0,
+    macro: 0.1, macroScale: 0.14,
     sample(u, v, noise, out) {
       // Woven cloth: visible warp/weft at close range, dye variation at range.
       const warp = Math.sin(u * TAU * 90) * 0.5 + 0.5;
@@ -2297,6 +2498,7 @@ const SURFACES = {
   wood: {
     tile: 1.5,
     metalness: 0.0,
+    macro: 0.12, macroScale: 0.12,
     sample(u, v, noise, out) {
       // Ring grain: a low-frequency field pushed through fract() gives rings
       // that bend around knots instead of running as straight stripes.
@@ -2322,6 +2524,7 @@ const SURFACES = {
   rubble: {
     tile: 2.0,
     metalness: 0.0,
+    macro: 0.26, macroScale: 0.06,
     sample(u, v, noise, out) {
       const chunks = noise.tiling(u * 10, v * 10, 10, 3);
       const dust = detail(noise, u, v, 50, 50);
@@ -2380,6 +2583,8 @@ class MaterialSystem {
     const size = ctx.quality.textureSize;
     this._noise = new Noise2D(ctx.rng.fork(0x5eed).seed);
 
+    this._buildMacroVariation(ctx.quality.textureSize >= 512 ? 256 : 128);
+
     const names = Object.keys(SURFACES);
     for (let i = 0; i < names.length; i++) {
       const name = names[i];
@@ -2393,6 +2598,67 @@ class MaterialSystem {
     }
 
     this._buildSpecials();
+  }
+
+  // Macro variation.
+  //
+  // A tiling texture repeated across a 68-metre market floor reads as a tiling
+  // texture, however good the tile is — the eye locks onto the period long
+  // before it notices the detail. The standard fix is to modulate albedo with a
+  // second, much lower-frequency field sampled at a different scale, so the
+  // repeat never lines up with itself. It costs one extra texture fetch and it
+  // is the single most effective thing available here.
+  //
+  // Injected through onBeforeCompile rather than baked, precisely because it
+  // has to vary at a scale *larger* than the tile: baking it in would make it
+  // repeat along with everything else and achieve nothing.
+  _buildMacroVariation(size = 256) {
+    const noise = new Noise2D(this.ctx.rng.fork(0xac0f).seed);
+    const data = new Uint8Array(size * size * 4);
+    const inv = 1 / size;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const n = noise.tiling(x * inv * 3, y * inv * 3, 3, 4, 2.0, 0.6);
+        const v = clamp(0.5 + n * 0.5, 0, 1);
+        const o = (y * size + x) * 4;
+        data[o] = data[o + 1] = data[o + 2] = v * 255;
+        data[o + 3] = 255;
+      }
+    }
+    const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.generateMipmaps = true;
+    tex.needsUpdate = true;
+    this._macroTex = tex;
+    return tex;
+  }
+
+  _applyMacroVariation(mat, strength, scale) {
+    const tex = this._macroTex;
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uMacro = { value: tex };
+      shader.uniforms.uMacroScale = { value: scale };
+      shader.uniforms.uMacroStrength = { value: strength };
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>',
+          '#include <common>\n' +
+          'uniform sampler2D uMacro;\n' +
+          'uniform float uMacroScale;\n' +
+          'uniform float uMacroStrength;')
+        .replace('#include <map_fragment>',
+          '#include <map_fragment>\n' +
+          '#ifdef USE_MAP\n' +
+          '  {\n' +
+          '    float macro = texture2D(uMacro, vMapUv * uMacroScale).r;\n' +
+          '    diffuseColor.rgb *= 1.0 + (macro - 0.5) * 2.0 * uMacroStrength;\n' +
+          '  }\n' +
+          '#endif');
+    };
+    // Materials with different injected code must not share a compiled
+    // program, and Three keys its cache on this string.
+    mat.customProgramCacheKey = () => `macro:${strength.toFixed(2)}:${scale}`;
   }
 
   _bakeSurface(name, def, size) {
@@ -2442,6 +2708,11 @@ class MaterialSystem {
     // aoMap defaults to the second UV set in some pipelines; every mesh here
     // carries a single UV channel, so pin it explicitly.
     ormTex.channel = 0;
+
+    // Large flat surfaces need the most help; a column or a crate never shows
+    // enough of itself at once for the repeat to register.
+    const macro = def.macro !== undefined ? def.macro : 0.18;
+    if (macro > 0) this._applyMacroVariation(mat, macro, def.macroScale || 0.07);
 
     this.textures.set(name, { albedo: albedoTex, normal: normalTex, orm: ormTex });
     this.materials.set(name, mat);
@@ -2571,17 +2842,20 @@ class MaterialSystem {
       opacity: 0.88
     }));
 
+    // Void Syndicate dark energy. Violet against a warm marble-and-gold world
+    // is both the faction's visual language and the reason you can pick a
+    // hostile out of the scene at range.
     add('hostile', new THREE.MeshStandardMaterial({
-      color: 0x501008,
-      emissive: 0xff3a12,
+      color: 0x2e0a50,
+      emissive: 0xc040ff,
       emissiveIntensity: 3.2,
       roughness: 0.3,
       metalness: 0.0
     }));
 
     add('beacon', new THREE.MeshStandardMaterial({
-      color: 0x40120c,
-      emissive: 0xff5522,
+      color: 0x2a0c40,
+      emissive: 0xb040ff,
       emissiveIntensity: 2.4,
       roughness: 0.35,
       metalness: 0.2
@@ -3197,6 +3471,51 @@ class Builder {
     return this.colliders[this.colliders.length - 1];
   }
 
+  // Yaw-rotated box. Use this for anything that does not run along a world
+  // axis — a diagonal parapet emitted as an AABB inflates enormously and eats
+  // the walkway beside it.
+  obox(pos, size, yaw, surface = 'stone', opts = {}) {
+    this.colliders.push({
+      type: 'obox',
+      x: pos[0], y: pos[1], z: pos[2],
+      hx: size[0] / 2, hy: size[1] / 2, hz: size[2] / 2,
+      yaw,
+      surface,
+      climbable: opts.climbable !== false,
+      blocksSight: opts.blocksSight !== false
+    });
+    return this.colliders[this.colliders.length - 1];
+  }
+
+  // An oriented sloped surface: walkable, never a wall.
+  //
+  // `from` and `to` are the centres of the two ends. `arch` raises the middle,
+  // matching the visible camber of a bridge deck. One of these replaces a run
+  // of stepped boxes, which is what makes sloped traversal continuous rather
+  // than a sequence of ledges to be climbed.
+  ramp(from, to, width, surface = 'stone', opts = {}) {
+    const dx = to[0] - from[0];
+    const dz = to[2] - from[2];
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-4) return null;
+    this.colliders.push({
+      type: 'ramp',
+      x: (from[0] + to[0]) / 2,
+      z: (from[2] + to[2]) / 2,
+      dx: dx / len, dz: dz / len,
+      halfLen: len / 2,
+      halfWidth: width / 2,
+      y0: from[1], y1: to[1],
+      arch: opts.arch || 0,
+      thickness: opts.thickness || 1.2,
+      surface,
+      climbable: true,
+      blocksSight: opts.blocksSight !== false,
+      active: opts.active !== false
+    });
+    return this.colliders[this.colliders.length - 1];
+  }
+
   // Vertical cylinder collider — columns resolve much better against this than
   // against a square box, and the map is full of columns.
   cylinder(pos, radius, height, surface = 'stone', opts = {}) {
@@ -3456,8 +3775,14 @@ class Kit {
     }
   }
 
-  // A run of steps. Each tread gets a collider so the player controller can
-  // step up it naturally instead of needing a ramp special case.
+  // A run of steps: visible treads, but collision is one ramp underneath.
+  //
+  // This is the standard trick and it is worth doing even where per-tread
+  // boxes technically work. Walking a staircase as a series of step-ups means
+  // the controller has to re-resolve a ledge every tread — it costs speed, it
+  // makes the camera stutter, and any overlap between treads risks the
+  // step-up being refused outright. A ramp is one continuous surface, and the
+  // treads you can see are what sell it as a staircase.
   stairs(x, y, z, width, rise, run, count, dirX, dirZ, matName = 'marble') {
     const b = this.b;
     const mat = this.mat(matName);
@@ -3465,21 +3790,27 @@ class Kit {
     const len = Math.hypot(dirX, dirZ) || 1;
     const dx = dirX / len;
     const dz = dirZ / len;
-    const px = -dz;
-    const pz = dx;
 
     for (let i = 0; i < count; i++) {
       const cx = x + dx * (run * (i + 0.5));
       const cz = z + dz * (run * (i + 0.5));
       const cy = y + rise * (i + 0.5);
       // Each step is a full-height block down to the previous tread, so there
-      // are no gaps to fall through.
+      // are no gaps to see through.
       const h = rise;
       const sizeX = Math.abs(dx) > Math.abs(dz) ? run : width;
       const sizeZ = Math.abs(dx) > Math.abs(dz) ? width : run;
       b.add(boxGeo(sizeX, h, sizeZ, tile), mat, makeMatrix([cx, cy, cz]));
-      b.box([cx, cy, cz], [sizeX, h, sizeZ], 'stone');
     }
+
+    // The collision surface runs from the bottom of the first tread to the top
+    // of the last, half a tread proud at each end so you step on and off
+    // cleanly rather than clipping the first riser.
+    b.ramp(
+      [x - dx * run * 0.5, y, z - dz * run * 0.5],
+      [x + dx * run * (count + 0.5), y + rise * count, z + dz * run * (count + 0.5)],
+      width, 'stone'
+    );
     return {
       topX: x + dx * run * count,
       topY: y + rise * count,
@@ -4334,7 +4665,7 @@ class WorldSystem {
     ring.position.y = 2.6;
     group.add(ring);
 
-    const light = new THREE.PointLight(0xff5522, 3.0, 20, 1.8);
+    const light = new THREE.PointLight(0xb040ff, 3.0, 20, 1.8);
     light.position.y = 2.6;
     group.add(light);
 
@@ -4526,46 +4857,69 @@ class WorldSystem {
   }
 
   // Deck + parapet + underside ribs spanning two points, with a slight arch.
+  //
+  // The visible deck is still built from segments so it can follow the camber,
+  // but collision is a SINGLE ramp across the whole span. The previous version
+  // emitted one axis-aligned box per segment: on a diagonal bridge each 2.5m
+  // plank became a 5.3m square that overlapped its neighbours, and since every
+  // segment then sat inside the next one's volume, the step onto it was
+  // refused. That is what forced you to jump from piece to piece.
   _bridge(kit, b, x0, y0, z0, x1, y1, z1, width) {
     const dx = x1 - x0, dz = z1 - z0;
     const len = Math.hypot(dx, dz);
     const ang = Math.atan2(dz, dx);
     const segs = Math.max(4, Math.ceil(len / 2.5));
     const deckMat = kit.mat('sandstone');
+    const arch = Math.min(1.6, len * 0.06);
 
+    // One collider for the whole deck. Walk-on, never a wall.
+    b.ramp([x0, y0, z0], [x1, y1, z1], width - 0.6, 'stone', { arch, blocksSight: false });
+
+    // Parapets as oriented boxes, split into a few pieces so each one hugs the
+    // camber instead of being one long box through the middle of the arch.
+    const pieces = Math.max(2, Math.ceil(len / 5));
+    for (let p = 0; p < pieces; p++) {
+      const t = (p + 0.5) / pieces;
+      const px = x0 + dx * t;
+      const pz = z0 + dz * t;
+      const py = y0 + (y1 - y0) * t + Math.sin(t * Math.PI) * arch;
+      for (const s of [-1, 1]) {
+        b.obox(
+          [px + Math.sin(ang) * s * (width / 2 - 0.15), py + 0.42,
+            pz - Math.cos(ang) * s * (width / 2 - 0.15)],
+          [len / pieces + 0.1, 0.85, 0.3], -ang,
+          'stone', { blocksSight: false, climbable: false }
+        );
+      }
+    }
+
+    // Visual geometry only from here down — collision is the ramp and the
+    // oriented parapets above.
     for (let i = 0; i < segs; i++) {
       const t = (i + 0.5) / segs;
       const x = x0 + dx * t;
       const z = z0 + dz * t;
       // Rise in the middle so it reads as an arch, not a plank.
-      const arch = Math.sin(t * Math.PI) * Math.min(1.6, len * 0.06);
-      const y = y0 + (y1 - y0) * t + arch;
+      const camber = Math.sin(t * Math.PI) * arch;
+      const y = y0 + (y1 - y0) * t + camber;
       const segLen = len / segs + 0.12;
 
       const g = boxGeo(segLen, 0.5, width, 2.5);
       b.add(g, deckMat, makeMatrix([x, y - 0.25, z], [0, -ang, 0]));
       g.dispose();
-      b.box([x, y - 0.25, z],
-        [Math.abs(Math.cos(ang)) * segLen + Math.abs(Math.sin(ang)) * width, 0.5,
-        Math.abs(Math.sin(ang)) * segLen + Math.abs(Math.cos(ang)) * width], 'stone');
 
-      // Parapets.
       for (const s of [-1, 1]) {
         const px = x + Math.sin(ang) * s * (width / 2 - 0.15);
         const pz = z - Math.cos(ang) * s * (width / 2 - 0.15);
         const p = boxGeo(segLen, 0.85, 0.3, 2);
         b.add(p, kit.mat('marble'), makeMatrix([px, y + 0.42, pz], [0, -ang, 0]));
         p.dispose();
-        b.box([px, y + 0.42, pz],
-          [Math.abs(Math.cos(ang)) * segLen + Math.abs(Math.sin(ang)) * 0.3, 0.85,
-          Math.abs(Math.sin(ang)) * segLen + Math.abs(Math.cos(ang)) * 0.3],
-          'stone', { blocksSight: false });
       }
 
       // Underside ribs every other segment.
       if (i % 2 === 0) {
-        const rib = boxGeo(0.5, 1.2 + arch, width * 0.8, 2);
-        b.add(rib, deckMat, makeMatrix([x, y - 1.1 - arch / 2, z], [0, -ang, 0]));
+        const rib = boxGeo(0.5, 1.2 + camber, width * 0.8, 2);
+        b.add(rib, deckMat, makeMatrix([x, y - 1.1 - camber / 2, z], [0, -ang, 0]));
         rib.dispose();
       }
     }
@@ -4604,28 +4958,14 @@ class WorldSystem {
     group.rotation.z = -1.15;
     this.props.add(group);
 
-    // Colliders for the deployed position, registered up front but flagged
-    // inactive so the physics broadphase can skip them until deployment.
-    const colliders = [];
-    const segs = Math.max(4, Math.ceil(len / 3));
-    for (let i = 0; i < segs; i++) {
-      const t = (i + 0.5) / segs;
-      const cx = x0 + dx * t;
-      const cz = z0 + dz * t;
-      const cy = y0 + (y1 - y0) * t;
-      const segLen = len / segs + 0.15;
-      const c = {
-        type: 'box',
-        minX: cx - (Math.abs(Math.cos(ang)) * segLen + Math.abs(Math.sin(ang)) * width) / 2,
-        maxX: cx + (Math.abs(Math.cos(ang)) * segLen + Math.abs(Math.sin(ang)) * width) / 2,
-        minY: cy - 0.5, maxY: cy,
-        minZ: cz - (Math.abs(Math.sin(ang)) * segLen + Math.abs(Math.cos(ang)) * width) / 2,
-        maxZ: cz + (Math.abs(Math.sin(ang)) * segLen + Math.abs(Math.cos(ang)) * width) / 2,
-        surface: 'stone', climbable: true, blocksSight: false, active: false
-      };
-      colliders.push(c);
-      this.builder.colliders.push(c);
-    }
+    // One ramp for the deployed position, registered up front but inactive so
+    // the broadphase skips it until the span swings into place. Same reasoning
+    // as `_bridge`: a diagonal span split into boxes is impassable.
+    const ramp = this.builder.ramp(
+      [x0, y0, z0], [x1, y1, z1], width - 0.6, 'stone',
+      { blocksSight: false, active: false }
+    );
+    const colliders = ramp ? [ramp] : [];
 
     this.span = {
       group, colliders, deployed: false, t: 0,
@@ -4725,6 +5065,237 @@ class WorldSystem {
 return { DISTRICTS, TEMPLE_APRON, WORLD_BOUNDS, VOID_Y, WorldSystem };
 };
 
+__aethModules["src/world/zones.js"] = function () {
+const THREE = __ext0;
+const { damp, clamp } = __aeth("src/core/rng.js");
+const { DISTRICTS, TEMPLE_APRON } = __aeth("src/world/world.js");
+
+
+
+
+// District atmosphere.
+//
+// The archipelago is one contiguous scene and always has been — there is no
+// loading between districts and never was. What was missing is that crossing
+// from the open terrace into the sunken vaults felt like nothing, because every
+// district shared one fog colour, one exposure and one reverb.
+//
+// Each district declares its own air: fog density and tint, an exposure offset,
+// grade contrast and saturation, and an audio space. The player's position
+// blends between them continuously, so a crossing is a gradient rather than a
+// switch, and nothing ever stops to load.
+
+const ZONES = {
+  landing: {
+    label: 'Landing Terrace',
+    fogColour: 0xa8c6e4, fogDensity: 0.0020,
+    exposure: 0.62, contrast: 1.13, saturation: 1.14,
+    space: 'open', hemi: 0.22
+  },
+  market: {
+    label: 'Market Tier',
+    // Warmer and slightly hazier — awnings, dust, bodies, cooking smoke.
+    fogColour: 0xb8c2d0, fogDensity: 0.0030,
+    exposure: 0.60, contrast: 1.15, saturation: 1.20,
+    space: 'street', hemi: 0.24
+  },
+  vaults: {
+    label: 'Sunken Vaults',
+    // Cold, close and dark. The aether pools are the only light down here, so
+    // the exposure drops and the fog thickens to shorten sightlines.
+    fogColour: 0x2a3850, fogDensity: 0.0140,
+    exposure: 0.50, contrast: 1.24, saturation: 0.92,
+    space: 'vault', hemi: 0.10
+  },
+  ruins: {
+    label: 'Ruined District',
+    // Dust hanging in the air over broken stone.
+    fogColour: 0xc0bbae, fogDensity: 0.0044,
+    exposure: 0.63, contrast: 1.10, saturation: 1.04,
+    space: 'open', hemi: 0.26
+  },
+  temple: {
+    label: 'Temple Plateau',
+    // High, open and gilded. Thin air, long views, warm bounce off the dome.
+    fogColour: 0xbcd2ea, fogDensity: 0.0016,
+    exposure: 0.66, contrast: 1.12, saturation: 1.18,
+    space: 'temple', hemi: 0.26
+  }
+};
+
+// Falloff beyond a district's footprint over which its influence decays. Wide
+// enough that bridges are a genuine blend of the two ends they connect.
+const FALLOFF = 26;
+
+class ZoneSystem {
+  constructor() {
+    this.current = 'landing';
+    this._weights = {};
+    this._blend = {
+      fogColour: new THREE.Color(0xa8c6e4),
+      fogDensity: 0.0020,
+      exposure: 0.62,
+      contrast: 1.13,
+      saturation: 1.14,
+      hemi: 0.22
+    };
+    this._seen = new Set();
+    this._cardT = 0;
+  }
+
+  async init() {
+    this.cardEl = document.getElementById('districtCard');
+  }
+
+  async ready() {
+    // The apron belongs to the temple's air even though it is a separate
+    // island — you are already in the temple's world by the time you land on it.
+    this._regions = Object.keys(ZONES).map((key) => ({
+      key,
+      zone: ZONES[key],
+      boxes: key === 'temple'
+        ? [DISTRICTS.temple, TEMPLE_APRON]
+        : [DISTRICTS[key]]
+    }));
+    for (const k of Object.keys(ZONES)) this._weights[k] = 0;
+    this._weights.landing = 1;
+    this._apply(1);
+  }
+
+  // Influence of a district at a point: 1 inside its footprint, falling to 0
+  // over FALLOFF metres outside it. Height matters too — standing on the
+  // temple plateau should not pick up the market's air from 20m below.
+  _influence(region, p) {
+    let best = 0;
+    for (const b of region.boxes) {
+      const dx = Math.max(0, Math.abs(p.x - b.x) - b.w / 2);
+      const dz = Math.max(0, Math.abs(p.z - b.z) - b.d / 2);
+      const dy = Math.max(0, Math.abs(p.y - b.y) - 12);
+      const d = Math.hypot(dx, dz) + dy * 1.5;
+      best = Math.max(best, 1 - clamp(d / FALLOFF, 0, 1));
+    }
+    return best * best;   // squared, so the nearest district dominates
+  }
+
+  update(dt) {
+    const player = this.ctx.tryGet('player');
+    if (!player || !this._regions) return;
+
+    // Re-weight on a slow cadence; the blend below runs every frame regardless,
+    // so this costs nothing visually.
+    if (this.ctx.time.frame % 6 === 0) {
+      let total = 0;
+      let top = 0;
+      let topKey = this.current;
+      for (const r of this._regions) {
+        const w = this._influence(r, player.position);
+        this._weights[r.key] = w;
+        total += w;
+        if (w > top) { top = w; topKey = r.key; }
+      }
+      if (total > 0.001) {
+        for (const r of this._regions) this._weights[r.key] /= total;
+      } else {
+        // Out over the void between islands — hold the last air.
+        this._weights[this.current] = 1;
+      }
+      if (topKey !== this.current && top > 0.45) {
+        this.current = topKey;
+        this._onEnter(topKey);
+      }
+    }
+
+    this._blendTargets(dt);
+    this._apply(dt);
+    this._updateCard(dt);
+  }
+
+  _blendTargets(dt) {
+    let fogR = 0, fogG = 0, fogB = 0;
+    let density = 0, exposure = 0, contrast = 0, saturation = 0, hemi = 0;
+    const c = new THREE.Color();
+
+    for (const r of this._regions) {
+      const w = this._weights[r.key];
+      if (w <= 0.0001) continue;
+      const z = r.zone;
+      c.setHex(z.fogColour);
+      fogR += c.r * w; fogG += c.g * w; fogB += c.b * w;
+      density += z.fogDensity * w;
+      exposure += z.exposure * w;
+      contrast += z.contrast * w;
+      saturation += z.saturation * w;
+      hemi += z.hemi * w;
+    }
+
+    // Damped toward the weighted target rather than snapped, so even a fast
+    // crossing reads as the air changing around you.
+    const b = this._blend;
+    const rate = 1.6;
+    b.fogColour.setRGB(
+      damp(b.fogColour.r, fogR, rate, dt),
+      damp(b.fogColour.g, fogG, rate, dt),
+      damp(b.fogColour.b, fogB, rate, dt)
+    );
+    b.fogDensity = damp(b.fogDensity, density, rate, dt);
+    b.exposure = damp(b.exposure, exposure, rate, dt);
+    b.contrast = damp(b.contrast, contrast, rate, dt);
+    b.saturation = damp(b.saturation, saturation, rate, dt);
+    b.hemi = damp(b.hemi, hemi, rate, dt);
+  }
+
+  _apply() {
+    const ctx = this.ctx;
+    const b = this._blend;
+
+    if (ctx.scene.fog) {
+      ctx.scene.fog.color.copy(b.fogColour);
+      ctx.scene.fog.density = b.fogDensity;
+    }
+    const render = ctx.tryGet('render');
+    if (render) {
+      render.setExposure(b.exposure);
+      if (render.grade) {
+        render.grade.uniforms.uContrast.value = b.contrast;
+        render.grade.uniforms.uSaturation.value = b.saturation;
+      }
+      if (render.hemi) render.hemi.intensity = b.hemi;
+    }
+  }
+
+  _onEnter(key) {
+    const zone = ZONES[key];
+    const audio = this.ctx.tryGet('audio');
+    if (audio && audio.enabled) audio.setSpace(zone.space);
+
+    this.ctx.bus.emit('district:enter', { key, label: zone.label });
+
+    // The card is a first-visit thing. Announcing "MARKET TIER" every time you
+    // step back across a bridge would be noise.
+    if (this._seen.has(key)) return;
+    this._seen.add(key);
+    if (this.cardEl) {
+      this.cardEl.textContent = zone.label;
+      this.cardEl.classList.add('show');
+      this._cardT = 3.4;
+    }
+  }
+
+  _updateCard(dt) {
+    if (this._cardT <= 0) return;
+    this._cardT -= dt;
+    if (this._cardT <= 0 && this.cardEl) this.cardEl.classList.remove('show');
+  }
+
+  reset() {
+    this._seen.clear();
+    this.current = 'landing';
+  }
+}
+
+return { ZONES, ZoneSystem };
+};
+
 __aethModules["src/physics/physics.js"] = function () {
 const THREE = __ext0;
 const { scratch } = __aeth("src/core/loop.js");
@@ -4750,6 +5321,73 @@ const CELL = 8;
 const SKIN = 0.02;
 const MAX_SUBSTEP = 0.35;
 
+// ── Collider shapes ───────────────────────────────────────────────────────
+//
+// Four kinds, and the reason there are four is worth stating. Axis-aligned
+// boxes are cheap and correct for architecture that runs along the world axes,
+// which most of this level does. They are badly wrong for anything diagonal:
+// the AABB of a 2.5m plank at 45 degrees is a 5.3m square, so a diagonal bridge
+// built from per-segment boxes has every segment sitting inside its
+// neighbours' volumes. That is what made bridges impassable.
+//
+//   box   axis-aligned, blocks horizontally, walkable on top
+//   obox  yaw-rotated box — same, without the diagonal inflation
+//   cyl   vertical cylinder, for columns
+//   ramp  oriented sloped surface, GROUND ONLY — never blocks horizontally,
+//         so there is no step-up to be refused and no seam to catch on
+
+// Surface height of a ramp at a world point, or null if outside its footprint.
+function rampSurfaceY(c, x, z) {
+  const px = x - c.x;
+  const pz = z - c.z;
+  const u = px * c.dx + pz * c.dz;        // along the run
+  const v = -px * c.dz + pz * c.dx;       // across it
+  if (u < -c.halfLen || u > c.halfLen) return null;
+  if (v < -c.halfWidth || v > c.halfWidth) return null;
+  const t = (u + c.halfLen) / (2 * c.halfLen);
+  let y = c.y0 + (c.y1 - c.y0) * t;
+  if (c.arch) y += c.arch * Math.sin(t * Math.PI);
+  return y;
+}
+
+// World offset -> oriented-box local space (rotate by -yaw).
+function oboxLocalX(c, px, pz) { return px * c.cos + pz * c.sin; }
+function oboxLocalZ(c, px, pz) { return -px * c.sin + pz * c.cos; }
+
+// Does the capsule footprint overlap this collider's footprint?
+//
+// The comparisons are `<=`, not `<`, and that matters: `groundAt` is a point
+// query and passes radius 0, so a strict `<` would compare `0 < 0` and report
+// that a point sitting squarely inside a box is outside it. That is exactly
+// what happened on the first pass — the navigation grid collapsed from 7000
+// walkable cells to 439 because every point query missed.
+function overlapsFootprint(c, x, z, radius) {
+  if (c.type === 'cyl') {
+    const dx = x - c.x, dz = z - c.z;
+    const r = radius + c.radius;
+    return dx * dx + dz * dz <= r * r;
+  }
+  if (c.type === 'obox') {
+    const px = x - c.x, pz = z - c.z;
+    const lx = oboxLocalX(c, px, pz);
+    const lz = oboxLocalZ(c, px, pz);
+    const qx = lx - clamp(lx, -c.hx, c.hx);
+    const qz = lz - clamp(lz, -c.hz, c.hz);
+    return qx * qx + qz * qz <= radius * radius;
+  }
+  if (c.type === 'ramp') return rampSurfaceY(c, x, z) !== null;
+  const cx = clamp(x, c.minX, c.maxX);
+  const cz = clamp(z, c.minZ, c.maxZ);
+  const dx = x - cx, dz = z - cz;
+  return dx * dx + dz * dz <= radius * radius;
+}
+
+// Top surface of a collider under a point, or null when the point is outside.
+function topAt(c, x, z, radius) {
+  if (c.type === 'ramp') return rampSurfaceY(c, x, z);
+  return overlapsFootprint(c, x, z, radius) ? c.maxY : null;
+}
+
 class PhysicsSystem {
   constructor() {
     this.colliders = [];
@@ -4774,7 +5412,7 @@ class PhysicsSystem {
   _rebuildGrid() {
     this.grid.clear();
     for (let i = 0; i < this.colliders.length; i++) {
-      const c = this.colliders[i];
+      const c = this._prepare(this.colliders[i]);
       const b = this._bounds(c);
       const x0 = Math.floor(b.minX / CELL), x1 = Math.floor(b.maxX / CELL);
       const z0 = Math.floor(b.minZ / CELL), z1 = Math.floor(b.maxZ / CELL);
@@ -4796,6 +5434,42 @@ class PhysicsSystem {
         minY: c.minY, maxY: c.maxY,
         minZ: c.z - c.radius, maxZ: c.z + c.radius
       };
+    }
+    if (c.type === 'obox') {
+      const ex = c.hx * Math.abs(c.cos) + c.hz * Math.abs(c.sin);
+      const ez = c.hx * Math.abs(c.sin) + c.hz * Math.abs(c.cos);
+      return {
+        minX: c.x - ex, maxX: c.x + ex,
+        minY: c.minY, maxY: c.maxY,
+        minZ: c.z - ez, maxZ: c.z + ez
+      };
+    }
+    if (c.type === 'ramp') {
+      const ex = c.halfLen * Math.abs(c.dx) + c.halfWidth * Math.abs(c.dz);
+      const ez = c.halfLen * Math.abs(c.dz) + c.halfWidth * Math.abs(c.dx);
+      return {
+        minX: c.x - ex, maxX: c.x + ex,
+        minY: c.minY, maxY: c.maxY,
+        minZ: c.z - ez, maxZ: c.z + ez
+      };
+    }
+    return c;
+  }
+
+  // Normalises the shorthand each collider factory emits into the derived
+  // fields the solver expects. Called once at bake time, not per frame.
+  _prepare(c) {
+    if (c.type === 'obox' && c.cos === undefined) {
+      c.cos = Math.cos(c.yaw);
+      c.sin = Math.sin(c.yaw);
+      c.minY = c.y - c.hy;
+      c.maxY = c.y + c.hy;
+    }
+    if (c.type === 'ramp' && c.minY === undefined) {
+      const lo = Math.min(c.y0, c.y1);
+      const hi = Math.max(c.y0, c.y1) + Math.max(0, c.arch || 0);
+      c.minY = lo - (c.thickness || 1.0);
+      c.maxY = hi;
     }
     return c;
   }
@@ -4850,6 +5524,12 @@ class PhysicsSystem {
     // Then vertical.
     pos.y += delta.y;
     this._resolveVertical(pos, radius, height, state, delta.y);
+
+    // Ground snapping. Only when we were already on the ground and are not
+    // moving upward — otherwise this would cancel jumps.
+    if (!state.grounded && state.wasGrounded && delta.y <= 0) {
+      this._snapToGround(pos, radius, height, state, state.stepHeight);
+    }
     return state;
   }
 
@@ -4861,9 +5541,59 @@ class PhysicsSystem {
 
     for (let i = 0; i < list.length; i++) {
       const c = list[i];
+      // Ramps are walkable surfaces, never walls. This is the whole point of
+      // the type: there is no side to be stopped by, so a sloped bridge cannot
+      // trap you no matter how it is oriented.
+      if (c.type === 'ramp') continue;
+
       // Vertical overlap test with a small tolerance, so standing exactly on a
       // surface is not read as colliding with its side.
       if (c.maxY <= feet + 0.06 || c.minY >= head - 0.02) continue;
+
+      if (c.type === 'obox') {
+        const px = pos.x - c.x;
+        const pz = pos.z - c.z;
+        const lx = oboxLocalX(c, px, pz);
+        const lz = oboxLocalZ(c, px, pz);
+        const qx = lx - clamp(lx, -c.hx, c.hx);
+        const qz = lz - clamp(lz, -c.hz, c.hz);
+        const d2 = qx * qx + qz * qz;
+        if (d2 >= radius * radius && d2 > 1e-9) continue;
+
+        if (c.climbable && c.maxY - feet <= state.stepHeight && c.maxY > feet &&
+          this._hasHeadroom(pos, radius, height, c.maxY, state.stepHeight)) {
+          pos.y = c.maxY + SKIN;
+          state.steppedUp = c.maxY - feet;
+          continue;
+        }
+
+        // Resolve in the box's own frame, then rotate the push back out.
+        let nx, nz;
+        if (d2 > 1e-9) {
+          const d = Math.sqrt(d2);
+          const push = (radius - d) + SKIN;
+          nx = (qx / d) * push;
+          nz = (qz / d) * push;
+        } else {
+          const pxPos = c.hx - lx + radius;
+          const pxNeg = lx + c.hx + radius;
+          const pzPos = c.hz - lz + radius;
+          const pzNeg = lz + c.hz + radius;
+          const m = Math.min(pxPos, pxNeg, pzPos, pzNeg);
+          if (m === pxPos) { nx = pxPos; nz = 0; }
+          else if (m === pxNeg) { nx = -pxNeg; nz = 0; }
+          else if (m === pzPos) { nx = 0; nz = pzPos; }
+          else { nx = 0; nz = -pzNeg; }
+        }
+        const wx = nx * c.cos - nz * c.sin;
+        const wz = nx * c.sin + nz * c.cos;
+        pos.x += wx;
+        pos.z += wz;
+        const wl = Math.hypot(wx, wz) || 1;
+        state.wallNormal.set(wx / wl, 0, wz / wl);
+        state.hitWall = true;
+        continue;
+      }
 
       if (c.type === 'cyl') {
         const dx = pos.x - c.x;
@@ -4872,7 +5602,8 @@ class PhysicsSystem {
         const minD = radius + c.radius;
         if (d >= minD || d < 1e-6) continue;
         // Step up onto low obstacles instead of being stopped by a kerb.
-        if (c.climbable && c.maxY - feet <= state.stepHeight && this._hasHeadroom(pos, radius, height, c.maxY)) {
+        if (c.climbable && c.maxY - feet <= state.stepHeight &&
+          this._hasHeadroom(pos, radius, height, c.maxY, state.stepHeight)) {
           pos.y = c.maxY + SKIN;
           state.steppedUp = c.maxY - feet;
           continue;
@@ -4896,7 +5627,7 @@ class PhysicsSystem {
         }
 
         if (c.climbable && c.maxY - feet <= state.stepHeight && c.maxY > feet &&
-          this._hasHeadroom(pos, radius, height, c.maxY)) {
+          this._hasHeadroom(pos, radius, height, c.maxY, state.stepHeight)) {
           pos.y = c.maxY + SKIN;
           state.steppedUp = c.maxY - feet;
           continue;
@@ -4925,19 +5656,50 @@ class PhysicsSystem {
     }
   }
 
-  _hasHeadroom(pos, radius, height, newFeet) {
+  // Can the capsule stand with its feet at `newFeet` without being inside
+  // something?
+  //
+  // The subtlety that broke bridges: a collider whose top is only slightly
+  // above the new foot height is not a ceiling, it is the next step. The
+  // original test rejected any collider with `maxY > newFeet`, so the next
+  // deck segment up an arch vetoed the step onto the one before it — and
+  // because diagonal segments have wildly inflated bounds, that segment
+  // genuinely did overlap where you were standing. Anything you could also
+  // step onto is skipped.
+  _hasHeadroom(pos, radius, height, newFeet, stepHeight = 0) {
     const list = this.query(pos.x - radius, pos.z - radius, pos.x + radius, pos.z + radius);
     const head = newFeet + height;
     for (let i = 0; i < list.length; i++) {
       const c = list[i];
-      if (c.minY >= head - 0.05 || c.maxY <= newFeet + 0.05) continue;
-      if (c.type === 'cyl') {
-        if (Math.hypot(pos.x - c.x, pos.z - c.z) < radius + c.radius) return false;
-      } else if (pos.x + radius > c.minX && pos.x - radius < c.maxX &&
-        pos.z + radius > c.minZ && pos.z - radius < c.maxZ) {
-        return false;
-      }
+      if (c.type === 'ramp') continue;              // walkable, never a ceiling
+      if (c.minY >= head - 0.05) continue;          // entirely above the head
+      if (c.maxY <= newFeet + 0.05) continue;       // entirely below the feet
+      if (c.climbable !== false && c.maxY <= newFeet + stepHeight) continue;
+      if (overlapsFootprint(c, pos.x, pos.z, radius)) return false;
     }
+    return true;
+  }
+
+  // Probe downward for a surface within `maxDrop` of the feet.
+  //
+  // Without this the player leaves the ground on every downward step and every
+  // arch crest, which reads as a constant series of little hops. Real
+  // controllers stick to the ground unless you jump.
+  _snapToGround(pos, radius, height, state, maxDrop) {
+    const list = this.query(pos.x - radius, pos.z - radius, pos.x + radius, pos.z + radius);
+    let best = -Infinity;
+    let surface = 'stone';
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      const top = topAt(c, pos.x, pos.z, radius);
+      if (top === null) continue;
+      if (top > pos.y + 0.02 || top < pos.y - maxDrop) continue;
+      if (top > best) { best = top; surface = c.surface; }
+    }
+    if (best === -Infinity) return false;
+    pos.y = best;
+    state.grounded = true;
+    state.groundSurface = surface;
     return true;
   }
 
@@ -4949,23 +5711,19 @@ class PhysicsSystem {
 
     for (let i = 0; i < list.length; i++) {
       const c = list[i];
-      let overlaps;
-      if (c.type === 'cyl') {
-        overlaps = Math.hypot(pos.x - c.x, pos.z - c.z) < radius + c.radius;
-      } else {
-        const cx = clamp(pos.x, c.minX, c.maxX);
-        const cz = clamp(pos.z, c.minZ, c.maxZ);
-        overlaps = (pos.x - cx) ** 2 + (pos.z - cz) ** 2 < radius * radius;
-      }
-      if (!overlaps) continue;
+      // Ramps report the height of the slope directly under the capsule, so
+      // walking one is a continuous surface rather than a run of steps.
+      const top = topAt(c, pos.x, pos.z, radius);
+      if (top === null) continue;
 
       // Surfaces at or just below the feet are ground candidates.
-      if (c.maxY <= pos.y + Math.max(0.12, -dy) + SKIN && c.maxY > bestTop) {
-        bestTop = c.maxY;
+      if (top <= pos.y + Math.max(0.12, -dy) + SKIN && top > bestTop) {
+        bestTop = top;
         bestSurface = c.surface;
       }
-      // Surfaces above the head are ceiling candidates.
-      if (c.minY >= pos.y + height - SKIN && c.minY < ceiling) {
+      // Surfaces above the head are ceiling candidates. A ramp has no
+      // underside you can hit your head on in this level.
+      if (c.type !== 'ramp' && c.minY >= pos.y + height - SKIN && c.minY < ceiling) {
         ceiling = c.minY;
       }
     }
@@ -4988,13 +5746,12 @@ class PhysicsSystem {
     let best = null;
     for (let i = 0; i < list.length; i++) {
       const c = list[i];
-      if (c.maxY > fromY) continue;
-      if (c.maxY < fromY - maxDrop) continue;
-      let inside;
-      if (c.type === 'cyl') inside = Math.hypot(x - c.x, z - c.z) <= c.radius;
-      else inside = x >= c.minX && x <= c.maxX && z >= c.minZ && z <= c.maxZ;
-      if (inside && (best === null || c.maxY > best.y)) {
-        best = { y: c.maxY, surface: c.surface, collider: c };
+      // Radius 0 — this is a point query, not a capsule.
+      const top = topAt(c, x, z, 0);
+      if (top === null) continue;
+      if (top > fromY || top < fromY - maxDrop) continue;
+      if (best === null || top > best.y) {
+        best = { y: top, surface: c.surface, collider: c };
       }
     }
     return best;
@@ -5034,9 +5791,10 @@ class PhysicsSystem {
             c._stamp = this._stamp;
             if (c.active === false) continue;
             if (sightOnly && c.blocksSight === false) continue;
-            const d = c.type === 'cyl'
-              ? this._rayCylinder(origin, dir, c, best)
-              : this._rayBox(origin, dir, c, best);
+            const d = c.type === 'cyl' ? this._rayCylinder(origin, dir, c, best)
+              : c.type === 'obox' ? this._rayObox(origin, dir, c, best)
+                : c.type === 'ramp' ? this._rayRamp(origin, dir, c, best)
+                  : this._rayBox(origin, dir, c, best);
             if (d !== null && d < best) {
               best = d;
               hit.hit = true;
@@ -5088,6 +5846,80 @@ class PhysicsSystem {
     if (tmin <= 0) return null;
     this._lastNormal.set(nx, ny, nz);
     return tmin;
+  }
+
+  // An oriented box is a plain slab test in the box's own frame.
+  _rayObox(o, d, c, maxT) {
+    const px = o.x - c.x;
+    const pz = o.z - c.z;
+    const lo = {
+      x: oboxLocalX(c, px, pz),
+      y: o.y - c.y,
+      z: oboxLocalZ(c, px, pz)
+    };
+    const ld = {
+      x: oboxLocalX(c, d.x, d.z),
+      y: d.y,
+      z: oboxLocalZ(c, d.x, d.z)
+    };
+    const local = {
+      minX: -c.hx, maxX: c.hx,
+      minY: -c.hy, maxY: c.hy,
+      minZ: -c.hz, maxZ: c.hz
+    };
+    const t = this._rayBox(lo, ld, local, maxT);
+    if (t === null) return null;
+    // _lastNormal is in box space; rotate it back to world.
+    const n = this._lastNormal;
+    const nx = n.x * c.cos - n.z * c.sin;
+    const nz = n.x * c.sin + n.z * c.cos;
+    n.set(nx, n.y, nz);
+    return t;
+  }
+
+  // Ramps have no closed-form intersection, so march the ray and find where it
+  // first drops below the surface, then bisect for a usable point. Accurate to
+  // a few centimetres, which is well inside what bullets and vision need.
+  _rayRamp(o, d, c, maxT) {
+    const b = this._bounds(c);
+    // Cheap reject against the ramp's AABB first.
+    if (this._rayBox(o, d, b, maxT) === null) {
+      const inside = o.x >= b.minX && o.x <= b.maxX && o.y >= b.minY &&
+        o.y <= b.maxY && o.z >= b.minZ && o.z <= b.maxZ;
+      if (!inside) return null;
+    }
+
+    const STEP = 0.35;
+    let prevT = 0;
+    let prevAbove = null;
+    for (let t = 0; t <= maxT; t = Math.min(t + STEP, maxT)) {
+      const x = o.x + d.x * t;
+      const y = o.y + d.y * t;
+      const z = o.z + d.z * t;
+      const s = rampSurfaceY(c, x, z);
+      if (s !== null) {
+        const above = y >= s;
+        if (prevAbove === true && !above) {
+          // Crossed the surface between prevT and t — bisect.
+          let lo = prevT, hi = t;
+          for (let k = 0; k < 8; k++) {
+            const mid = (lo + hi) * 0.5;
+            const my = o.y + d.y * mid;
+            const ms = rampSurfaceY(c, o.x + d.x * mid, o.z + d.z * mid);
+            if (ms === null || my >= ms) lo = mid; else hi = mid;
+          }
+          if (hi <= 0 || hi > maxT) return null;
+          this._lastNormal.set(0, 1, 0);
+          return hi;
+        }
+        prevAbove = above;
+      } else {
+        prevAbove = null;
+      }
+      prevT = t;
+      if (t >= maxT) break;
+    }
+    return null;
   }
 
   _rayCylinder(o, d, c, maxT) {
@@ -5222,7 +6054,7 @@ class PhysicsSystem {
 
 PhysicsSystem.prototype._lastNormal = new THREE.Vector3();
 
-return { PhysicsSystem };
+return { rampSurfaceY, PhysicsSystem };
 };
 
 __aethModules["src/player/player.js"] = function () {
@@ -5259,7 +6091,8 @@ const CFG = {
   standHeight: 1.78,
   crouchHeight: 1.05,
   eyeOffset: -0.16,      // eye sits just below the capsule top
-  stepHeight: 0.55,
+  // Comfortably clears a stair tread, a kerb, or the lip on an island edge.
+  stepHeight: 0.6,
 
   walkSpeed: 5.4,
   sprintSpeed: 9.0,
@@ -5321,7 +6154,12 @@ class PlayerSystem {
     this.keys = Object.create(null);
     this.moveState = {
       grounded: false, hitWall: false, hitCeiling: false, steppedUp: 0,
-      groundSurface: 'stone', stepHeight: CFG.stepHeight, wallNormal: new THREE.Vector3()
+      groundSurface: 'stone', stepHeight: CFG.stepHeight,
+      // The solver needs to know whether we were on the ground last step to
+      // decide if it may snap us back down; snapping an airborne player would
+      // cancel jumps.
+      wasGrounded: false,
+      wallNormal: new THREE.Vector3()
     };
 
     // Camera dynamics, all additive on top of the look angles.
@@ -5339,6 +6177,7 @@ class PlayerSystem {
 
     this._coyote = 0;
     this._jumpBuffered = 0;
+    this._jumpLock = 0;
     this._slideTime = 0;
     this._mantle = null;
     this._lastDamage = -99;
@@ -5439,6 +6278,7 @@ class PlayerSystem {
 
     this._coyote = Math.max(0, this._coyote - step);
     this._jumpBuffered = Math.max(0, this._jumpBuffered - step);
+    this._jumpLock = Math.max(0, this._jumpLock - step);
 
     if (this.state === STATE.MANTLE) {
       this._stepMantle(step);
@@ -5482,6 +6322,7 @@ class PlayerSystem {
       this.velocity.y = CFG.jumpVelocity;
       this._jumpBuffered = 0;
       this._coyote = 0;
+      this._jumpLock = 0.12;
       this.grounded = false;
       if (this.state === STATE.SLIDE) this._endSlide();
       this.state = STATE.AIR;
@@ -5493,6 +6334,9 @@ class PlayerSystem {
 
     const delta = scratch.v2.copy(this.velocity).multiplyScalar(step);
     this.moveState.stepHeight = this.state === STATE.SLIDE ? 0.25 : CFG.stepHeight;
+    // Ground snapping is suppressed for a moment after a jump so the launch is
+    // never pulled back down.
+    this.moveState.wasGrounded = this.grounded && this._jumpLock <= 0;
     const phys = this.ctx.get('physics');
     phys.moveCapsule(this.position, CFG.radius, this.height, delta, this.moveState);
 
@@ -5724,6 +6568,14 @@ class PlayerSystem {
       if (this._damageDirs.length > 6) this._damageDirs.shift();
     }
 
+    // Aim punch: being shot knocks your aim off, so taking fire has a cost
+    // beyond the health bar. Kept small and recoverable — it should make a
+    // firefight harder to win, not take control away.
+    if (cause === 'hit') {
+      const k = clamp(amount / 26, 0.2, 1);
+      this.addRecoil(k * 0.022, this.ctx.rng.spread(k * 0.014));
+    }
+
     this.ctx.bus.emit('damage:taken', { amount, cause, fromPosition });
 
     if (this.hp <= 0) {
@@ -5916,10 +6768,11 @@ function buildRifle(mats) {
 
   // ── Receiver ──────────────────────────────────────────────────────────
   put(boxGeo(0.085, 0.115, 0.44, 0.35), body, 0, 0, -0.10);
-  put(boxGeo(0.072, 0.03, 0.40, 0.3), dark, 0, 0.072, -0.11);
-  // Picatinny-style rail teeth.
+  put(boxGeo(0.072, 0.03, 0.40, 0.3), dark, 0, 0.060, -0.11);
+  // Picatinny-style rail teeth. Kept clear of the optic's sight line — see the
+  // APERTURE_R note below; anything above y 0.076 under the optic obstructs it.
   for (let i = 0; i < 7; i++) {
-    put(boxGeo(0.078, 0.012, 0.016, 0.2), dark, 0, 0.09, -0.26 + i * 0.05);
+    put(boxGeo(0.078, 0.012, 0.016, 0.2), dark, 0, 0.068, -0.26 + i * 0.05);
   }
   put(boxGeo(0.006, 0.045, 0.10, 0.2), dark, 0.045, 0.012, -0.03);
   put(cylGeo(0.009, 0.009, 0.07, 6, 0.2), dark, 0.055, 0.05, 0.045, 0, 0, Math.PI / 2);
@@ -5952,9 +6805,38 @@ function buildRifle(mats) {
   put(boxGeo(0.066, 0.036, 0.045, 0.2), dark, 0, -0.055, 0.285);
 
   // ── Optic housing ─────────────────────────────────────────────────────
-  put(boxGeo(0.044, 0.028, 0.11, 0.2), dark, 0, 0.10, -0.115);
-  put(boxGeo(0.052, 0.058, 0.012, 0.2), dark, 0, 0.128, -0.168);
-  put(boxGeo(0.052, 0.058, 0.012, 0.2), dark, 0, 0.128, -0.062);
+  //
+  // This is the part that has to have a hole in it. The first version used two
+  // solid plates for the bezels, which meant aiming down the sight put a solid
+  // slab across the middle of the screen — the lens and reticle were drawn in
+  // front of it, so it looked like a sight right up until you tried to use it.
+  //
+  // The body is an open-ended tube and the bezels are rings, so the line from
+  // the eye through APERTURE_R at the optic's centre is genuinely clear.
+  const APERTURE_R = 0.019;
+  const BEZEL_R = 0.029;
+
+  // Mount block, below the sight line.
+  put(boxGeo(0.044, 0.022, 0.11, 0.2), dark, 0, 0.058, -0.115);
+
+  // The optic needs its own material because it is the one part of the weapon
+  // that must render from both sides — you see the outside of the tube, and
+  // through the aperture you see the inside of its far wall. Cloned rather
+  // than mutating `dark`, which is shared with the entire world.
+  const opticMat = dark.clone();
+  opticMat.side = THREE.DoubleSide;
+  opticMat.name = 'optic';
+
+  // Tube: open at both ends, so the sight line passes straight through.
+  const tube = cylGeo(BEZEL_R * 0.88, BEZEL_R * 0.88, 0.106, 20, 0.2, true);
+  tube.rotateX(Math.PI / 2);
+  statics.push({ geometry: tube, material: opticMat, matrix: at(0, 0.095, -0.115) });
+
+  // Ring bezels front and rear — an annulus, not a plate.
+  for (const z of [-0.168, -0.062]) {
+    const ring = new THREE.RingGeometry(APERTURE_R, BEZEL_R, 24);
+    statics.push({ geometry: ring, material: opticMat, matrix: at(0, 0.095, z) });
+  }
 
   // ── Hands ─────────────────────────────────────────────────────────────
   // Left, wrapped around the handguard.
@@ -6002,14 +6884,16 @@ function buildRifle(mats) {
   const trigger = add(new THREE.CapsuleGeometry(0.011, 0.042, 3, 6), skin,
     -0.010, -0.052, 0.006, 0.55, 0, 1.1);
 
-  // Optic lens: additive and unlit, so it reads as glass catching the sky.
+  // Optic lens: additive and unlit, so it tints the view rather than veiling
+  // it. Sized to the aperture and kept faint — this sits directly on the sight
+  // line, so anything heavier here undoes the point of cutting the hole.
   const lens = add(
-    new THREE.CircleGeometry(0.021, 20),
+    new THREE.CircleGeometry(APERTURE_R, 20),
     new THREE.MeshBasicMaterial({
-      color: 0x2a6fa8, transparent: true, opacity: 0.42,
+      color: 0x2a6fa8, transparent: true, opacity: 0.16,
       blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false
     }),
-    0, 0.128, -0.055
+    0, 0.095, -0.055
   );
 
   // Floating reticle, only visible while aiming.
@@ -6020,7 +6904,7 @@ function buildRifle(mats) {
       blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
       toneMapped: false
     }),
-    0, 0.128, -0.048
+    0, 0.095, -0.048
   );
   reticle.renderOrder = 30;
 
@@ -6031,14 +6915,17 @@ function buildRifle(mats) {
 
   // The point the rig aligns to screen centre when aiming.
   const aimPoint = new THREE.Object3D();
-  aimPoint.position.set(0, 0.128, -0.11);
+  aimPoint.position.set(0, 0.095, -0.11);
   group.add(aimPoint);
 
   group.traverse((o) => { o.layers.set(LAYER_VIEWMODEL); });
 
   return {
     group, aimPoint, muzzleTip, lens, reticle,
-    cell, cellGlow, chargeBar, trigger
+    cell, cellGlow, chargeBar, trigger,
+    // Exposed so the weapon rig and the headless aperture test can both reason
+    // about the sight line without duplicating the constant.
+    apertureRadius: APERTURE_R
   };
 }
 
@@ -6050,7 +6937,7 @@ const THREE = __ext0;
 const { scratch } = __aeth("src/core/loop.js");
 const { clamp, lerp, damp, smoothstep } = __aeth("src/core/rng.js");
 const { buildRifle } = __aeth("src/weapons/rifle.js");
-const { LAYER_VIEWMODEL } = __aeth("src/render/render.js");
+const { VIEWMODEL_FOV_HIP, VIEWMODEL_FOV_ADS } = __aeth("src/render/render.js");
 
 
 
@@ -6089,8 +6976,12 @@ const WEAPON = {
   recoilKick: 0.055,
   recoilRoll: 0.03,
 
-  adsTime: 0.16,
-  swapTime: 0.5
+  adsTime: 0.14,
+  swapTime: 0.5,
+  // Time to bring the weapon back on target after sprinting. Without it you
+  // can fire accurately out of a full sprint, which removes any cost from
+  // running everywhere.
+  sprintRaiseTime: 0.22
 };
 
 // Deterministic recoil pattern: a repeatable climb with a horizontal S-curve,
@@ -6127,6 +7018,8 @@ class WeaponSystem {
     this._hitMarkerT = 0;
     this._lastHitWasKill = false;
     this._shells = [];
+    this._raiseT = 0;
+    this._wasSprinting = false;
   }
 
   async init() {
@@ -6138,10 +7031,13 @@ class WeaponSystem {
     this.ctx.camera.add(this.group);
     this.group.position.copy(HIP);
 
-    // Where the aim point must land in camera space when fully aimed. Slightly
-    // below centre reads better than dead centre because the reticle sits on
-    // the optic, not the barrel.
-    this._adsTarget = new THREE.Vector3(0, -0.028, -0.24);
+    // Where the aim point must land in camera space when fully aimed.
+    //
+    // Dead centre, and that is not a style choice: shots leave from the camera
+    // axis, so if the optic sits anywhere else the reticle lies about where
+    // the round goes. The previous -0.028 put it 6.7 degrees low. Pushed a
+    // little further out than before so the receiver covers less of the frame.
+    this._adsTarget = new THREE.Vector3(0, 0, -0.30);
 
     this._buildShellPool();
   }
@@ -6188,6 +7084,9 @@ class WeaponSystem {
   fire() {
     const player = this.ctx.get('player');
     if (this.reloading || this._cooldown > 0) return;
+    // The weapon is stowed across the body while sprinting; it has to come up
+    // before it can fire.
+    if (this._raiseT > 0) return;
     if (this.ammo <= 0) {
       this.ctx.bus.emit('weapon:dryfire', {});
       this._cooldown = 0.22;
@@ -6405,6 +7304,13 @@ class WeaponSystem {
     this._cooldown = Math.max(0, this._cooldown - dt);
     this._updateReload(dt);
 
+    // Sprinting stows the weapon; dropping out of a sprint starts the raise.
+    if (player.sprinting) {
+      this._raiseT = WEAPON.sprintRaiseTime;
+    } else if (this._raiseT > 0) {
+      this._raiseT = Math.max(0, this._raiseT - dt);
+    }
+
     if (this._triggerHeld && this._active()) this.fire();
     // Recoil pattern resets once you stop shooting for a beat.
     if (!this._triggerHeld && this._cooldown <= 0) {
@@ -6414,6 +7320,11 @@ class WeaponSystem {
     const ads = player.ads && !this.reloading && !player.sprinting;
     this._adsT = clamp(this._adsT + (ads ? dt / WEAPON.adsTime : -dt / WEAPON.adsTime), 0, 1);
     const adsE = smoothstep(0, 1, this._adsT);
+
+    // The viewmodel zooms with the world so aiming reads as magnification.
+    this.ctx.get('render').setViewmodelFov(
+      lerp(VIEWMODEL_FOV_HIP, VIEWMODEL_FOV_ADS, adsE)
+    );
 
     // Sway: the weapon lags behind fast look changes and settles back.
     const dYaw = player.yaw - this._lastYaw;
@@ -6521,6 +7432,7 @@ class WeaponSystem {
     this._triggerHeld = false;
     this._kick = 0;
     this._adsT = 0;
+    this._raiseT = 0;
   }
 }
 
@@ -6573,7 +7485,8 @@ const SURFACE_FX = {
   glass: { colour: 0xcfe8ff, spark: 0.4, dust: 0.3, decal: 0x2a3540 },
   foliage: { colour: 0x6fa356, spark: 0.0, dust: 0.6, decal: 0x1d2a16 },
   aether: { colour: 0x63c4ff, spark: 0.9, dust: 0.4, decal: 0x123044 },
-  flesh: { colour: 0xff6a3a, spark: 0.3, dust: 0.2, decal: 0x2a0d08 }
+  // 'flesh' is the hit-a-Syndicate-unit surface; dark-energy violet, not blood.
+  flesh: { colour: 0xc060ff, spark: 0.3, dust: 0.2, decal: 0x1e0a2a }
 };
 
 const PARTICLE_VS = /* glsl */ `
@@ -6996,7 +7909,7 @@ class FxSystem {
       const dir = scratch.v0.set(rng.spread(1), rng.spread(1), rng.spread(1)).normalize();
       const sp = rng.range(3, 12);
       this.emit(point.x, point.y, point.z, dir.x * sp, dir.y * sp + 3, dir.z * sp, {
-        colour: i % 4 === 0 ? 0xffcf7a : 0xff4a18,
+        colour: i % 4 === 0 ? 0xe8b0ff : 0xa030e0,
         size: rng.range(0.05, 0.2), life: rng.range(0.3, 0.9),
         drag: 2.2, gravity: 3, alpha: 0.9
       });
@@ -7005,8 +7918,8 @@ class FxSystem {
     // Real debris with gravity and bounce, unlike round 1's straight-flying
     // shards that were secretly enemy projectiles.
     const mat = new THREE.MeshStandardMaterial({
-      color: 0x24262e, metalness: 0.85, roughness: 0.4,
-      emissive: 0xff3a12, emissiveIntensity: 0.7,
+      color: 0x201a2e, metalness: 0.85, roughness: 0.4,
+      emissive: 0xa030e0, emissiveIntensity: 0.7,
       transparent: true, opacity: 1
     });
     const count = Math.min(12, Math.round(this.ctx.quality.debrisBudget / 12));
@@ -7408,24 +8321,30 @@ const { mergeByMaterial } = __aeth("src/world/geo.js");
 // on screen at once is the temple fight, and 180 draw calls for it is not a
 // budget worth spending.
 
+// Void Syndicate units. The Syndicate wields dark energy rather than the
+// Concord's bio-augmentation, and the emissive palette carries that: violet
+// through magenta, never the warm orange the world itself is lit in. That is
+// not only fiction — against marble, gold and afternoon sun, a hostile that
+// glows warm is genuinely hard to pick out, and one that glows violet reads
+// instantly at any range.
 const ARCHETYPES = {
   skirmisher: {
-    label: 'Skirmisher',
+    label: 'Void Wraith',
     hp: 70, speed: 6.4, accuracy: 0.72, fireRate: 0.42, burst: 3, burstGap: 1.35,
     damage: 7, range: 42, preferredRange: 14, aggression: 0.85,
-    scale: 0.88, glow: 0xff4a20, telegraph: 0.28
+    scale: 0.88, glow: 0xc040ff, telegraph: 0.28
   },
   sentry: {
-    label: 'Sentry',
+    label: 'Void Warden',
     hp: 110, speed: 2.4, accuracy: 0.88, fireRate: 0.75, burst: 2, burstGap: 1.7,
     damage: 12, range: 58, preferredRange: 26, aggression: 0.25,
-    scale: 1.0, glow: 0xffb020, telegraph: 0.5
+    scale: 1.0, glow: 0x9a5cff, telegraph: 0.5
   },
   heavy: {
-    label: 'Heavy',
+    label: 'Void Colossus',
     hp: 230, speed: 3.0, accuracy: 0.66, fireRate: 0.2, burst: 6, burstGap: 2.4,
     damage: 9, range: 34, preferredRange: 10, aggression: 0.95,
-    scale: 1.32, glow: 0xff2d10, telegraph: 0.65
+    scale: 1.32, glow: 0xe022c8, telegraph: 0.65
   }
 };
 
@@ -7452,11 +8371,11 @@ function buildDrone(type, mats) {
 
   // Cloned per drone so one alert drone does not light up the whole squad.
   const eyeMat = new THREE.MeshStandardMaterial({
-    color: 0x2a0a04, emissive: A.glow, emissiveIntensity: 1.2,
+    color: 0x12042a, emissive: A.glow, emissiveIntensity: 1.2,
     roughness: 0.4, metalness: 0.0
   });
   const jetMat = new THREE.MeshStandardMaterial({
-    color: 0x1a0602, emissive: A.glow, emissiveIntensity: 1.6,
+    color: 0x0e0320, emissive: A.glow, emissiveIntensity: 1.6,
     roughness: 0.5, metalness: 0.0
   });
 
@@ -8417,7 +9336,7 @@ class UiSystem {
       this._hitHead = e.headshot;
     });
     bus.on('actor:death', (e) => this.addKill(e.label || 'Drone', e.headshot));
-    bus.on('beacon:destroyed', () => this.addKill('Aether Beacon', false, true));
+    bus.on('beacon:destroyed', () => this.addKill('Void Anchor', false, true));
     bus.on('objective:advance', (e) => this.setObjective(e.title, e.sub, e.stage));
     bus.on('toast', (e) => this.toast(e.text, e.duration));
     bus.on('pointerlock:error', () =>
@@ -8471,12 +9390,12 @@ class UiSystem {
     const mm = Math.floor(timeSec / 60);
     const ss = Math.floor(timeSec % 60).toString().padStart(2, '0');
 
-    this.el.debriefTitle.textContent = won ? 'ELYSIUM PRIME SECURED' : 'MISSION FAILED';
+    this.el.debriefTitle.textContent = won ? 'ELYSIUM PRIME SECURED' : 'SENTINEL DOWN';
     this.el.debriefTitle.className = won ? 'win' : 'lose';
     this.el.debriefBody.innerHTML = `
       <div class="stat-grid">
         <div><span>Time</span><strong>${mm}:${ss}</strong></div>
-        <div><span>Drones destroyed</span><strong>${stats.kills}</strong></div>
+        <div><span>Syndicate destroyed</span><strong>${stats.kills}</strong></div>
         <div><span>Headshots</span><strong>${stats.headshots}</strong></div>
         <div><span>Accuracy</span><strong>${acc}%</strong></div>
         <div><span>Shots fired</span><strong>${stats.shotsFired}</strong></div>
@@ -8511,7 +9430,7 @@ class UiSystem {
   addKill(label, headshot, isObject = false) {
     const row = document.createElement('div');
     row.className = 'kill-row';
-    row.innerHTML = `<span class="k-src">You</span>` +
+    row.innerHTML = `<span class="k-src">VALTOR</span>` +
       `<span class="k-icon">${headshot ? '⌖' : isObject ? '◈' : '✕'}</span>` +
       `<span class="k-tgt">${label}</span>`;
     this.el.killFeed.appendChild(row);
@@ -8732,7 +9651,7 @@ class UiSystem {
         if (!known) continue;
         const [ax, ay] = project(a.position.x, a.position.z);
         const dy = a.position.y - player.position.y;
-        c.fillStyle = a.state === 'combat' ? 'rgba(255,70,50,0.95)' : 'rgba(255,150,60,0.8)';
+        c.fillStyle = a.state === 'combat' ? 'rgba(214,80,255,0.95)' : 'rgba(170,110,255,0.8)';
         c.beginPath();
         c.arc(ax, ay, 3.4, 0, Math.PI * 2);
         c.fill();
@@ -8873,7 +9792,7 @@ const STAGES = [
   {
     id: 'landing',
     title: 'Secure the Landing',
-    sub: 'Neutralise the terrace patrol',
+    sub: 'Neutralise the Void patrol',
     stage: 'STAGE 1 / 4',
     type: 'clear',
     district: 'landing'
@@ -8889,7 +9808,7 @@ const STAGES = [
   {
     id: 'span',
     title: 'Restore the Great Span',
-    sub: 'Destroy the three aether beacons',
+    sub: 'Destroy the three Void Anchors',
     stage: 'STAGE 3 / 4',
     type: 'beacons',
     district: 'ruins'
@@ -9018,7 +9937,7 @@ class GameSystem {
           patrol: this._patrolRing(DISTRICTS.ruins, 18)
         });
         for (const b of world.beacons) {
-          if (b.alive) this.markers.push({ position: b.pos, label: 'Beacon', colour: 'rgba(255,90,50,0.95)' });
+          if (b.alive) this.markers.push({ position: b.pos, label: 'Void Anchor', colour: 'rgba(190,80,255,0.95)' });
         }
         break;
 
@@ -9058,16 +9977,16 @@ class GameSystem {
     const world = this.ctx.get('world');
     const left = world.aliveBeacons;
     this.markers = this.markers.filter((m) => {
-      if (m.label !== 'Beacon') return true;
+      if (m.label !== 'Void Anchor') return true;
       return world.beacons.some((b) => b.alive && b.pos.equals(m.position));
     });
     if (left > 0) {
       this.ctx.bus.emit('toast', {
-        text: `Beacon down — ${left} remaining`, duration: 2.2
+        text: `Void Anchor down — ${left} remaining`, duration: 2.2
       });
     } else {
       world.deploySpan();
-      this.ctx.bus.emit('toast', { text: 'All beacons down', duration: 2.5 });
+      this.ctx.bus.emit('toast', { text: 'All Void Anchors down', duration: 2.5 });
       this._pendingAdvance = 2.4;
     }
   }
@@ -9075,7 +9994,7 @@ class GameSystem {
   _onPlayerDeath() {
     this._deaths++;
     this._respawnT = 2.6;
-    this.ctx.bus.emit('toast', { text: 'Integrity failure — reinitialising', duration: 2.4 });
+    this.ctx.bus.emit('toast', { text: 'Augment failure — Sentinel reinitialising', duration: 2.4 });
   }
 
   _win() {
@@ -9158,7 +10077,6 @@ class GameSystem {
     this._stageT += dt;
 
     this._updatePickups(dt);
-    this._updateAudioSpace(player);
     this._updateWaypoint(player);
 
     if (this._respawnT > 0) {
@@ -9214,23 +10132,6 @@ class GameSystem {
         break;
       }
     }
-  }
-
-  // Reverb space follows the player between districts.
-  _updateAudioSpace(player) {
-    const audio = this.ctx.tryGet('audio');
-    if (!audio || !audio.enabled) return;
-    if (this.ctx.time.frame % 30 !== 0) return;
-
-    const p = player.position;
-    let space = 'open';
-    const inside = (D, pad = 4) =>
-      Math.abs(p.x - D.x) < D.w / 2 + pad && Math.abs(p.z - D.z) < D.d / 2 + pad;
-
-    if (inside(DISTRICTS.vaults, 2) && p.y < DISTRICTS.vaults.y + 7) space = 'vault';
-    else if (inside(DISTRICTS.temple, 0) && p.y > DISTRICTS.temple.y - 2) space = 'temple';
-    else if (inside(DISTRICTS.market, 0)) space = 'street';
-    audio.setSpace(space);
   }
 
   // Screen-space waypoint: the single most valuable navigation aid once the
@@ -9840,12 +10741,13 @@ const THREE = __ext0;
 const { Context } = __aeth("src/core/context.js");
 const { EventBus } = __aeth("src/core/bus.js");
 const { Rng } = __aeth("src/core/rng.js");
-const { Loop } = __aeth("src/core/loop.js");
+const { Loop, FIXED_STEP } = __aeth("src/core/loop.js");
 const { detectPreset, makeQuality, PRESET_ORDER } = __aeth("src/core/quality.js");
 const { RenderSystem } = __aeth("src/render/render.js");
 const { MaterialSystem } = __aeth("src/materials/materials.js");
 const { SkySystem } = __aeth("src/sky/sky.js");
 const { WorldSystem } = __aeth("src/world/world.js");
+const { ZoneSystem } = __aeth("src/world/zones.js");
 const { PhysicsSystem } = __aeth("src/physics/physics.js");
 const { PlayerSystem } = __aeth("src/player/player.js");
 const { WeaponSystem } = __aeth("src/weapons/weapons.js");
@@ -9854,6 +10756,7 @@ const { AiSystem } = __aeth("src/ai/ai.js");
 const { UiSystem } = __aeth("src/ui/ui.js");
 const { GameSystem } = __aeth("src/ui/game.js");
 const { AudioSystem } = __aeth("src/audio/audio.js");
+
 
 
 
@@ -9934,6 +10837,7 @@ async function boot() {
   const materials = ctx.register('materials', new MaterialSystem());
   const sky = ctx.register('sky', new SkySystem());
   const world = ctx.register('world', new WorldSystem());
+  const zones = ctx.register('zones', new ZoneSystem());
   const physics = ctx.register('physics', new PhysicsSystem());
   const player = ctx.register('player', new PlayerSystem());
   const weapons = ctx.register('weapons', new WeaponSystem());
@@ -9945,10 +10849,10 @@ async function boot() {
 
   // Bring each system up one at a time, letting the browser paint the loading
   // bar between them.
-  const order = ['render', 'materials', 'sky', 'world', 'physics', 'player',
+  const order = ['render', 'materials', 'sky', 'world', 'zones', 'physics', 'player',
     'weapons', 'fx', 'ai', 'audio', 'ui', 'game'];
   const stageOf = {
-    render: 0, materials: 1, sky: 1, world: 2, physics: 2,
+    render: 0, materials: 1, sky: 1, world: 2, zones: 2, physics: 2,
     player: 4, weapons: 4, fx: 4, ai: 3, audio: 4, ui: 4, game: 4
   };
 
@@ -9982,7 +10886,10 @@ async function boot() {
   // is a test hook, not a debug console.
   window.AETHERIUM = {
     ctx, loop,
-    version: '2.0.0',
+    // Exposed so the headless tools can build raycasters and vectors against
+    // the same Three.js instance the demo is running.
+    THREE,
+    version: '3.0.0',
     quality: ctx.quality.name,
     presets: PRESET_ORDER,
     stats: () => ({
@@ -10000,7 +10907,21 @@ async function boot() {
       ammo: weapons.ammo
     }),
     teleport: (x, y, z) => player.respawn(new THREE.Vector3(x, y, z)),
-    startGame: () => document.getElementById('startBtn').click()
+    startGame: () => document.getElementById('startBtn').click(),
+
+    // Advance the simulation without rendering.
+    //
+    // The traversal tests care about the physics solver, not the renderer, and
+    // on a software rasteriser the renderer is three orders of magnitude
+    // slower than the thing under test. This runs the identical fixed-step
+    // path the game loop runs, so what it exercises is real — it just is not
+    // gated on drawing a frame.
+    step: (seconds) => {
+      const n = Math.min(20000, Math.round(seconds / FIXED_STEP));
+      for (let i = 0; i < n; i++) ctx.fixedUpdate(FIXED_STEP);
+      return n;
+    },
+    FIXED_STEP
   };
 
   console.info(

@@ -1,14 +1,17 @@
-# Aetherium Odyssey — Elysium Prime
+# Aetherium Wars — Elysium Prime
 
 A browser first-person shooter built on Three.js r180 and WebGL2. Every texture,
 mesh, animation and sound is generated procedurally at load time — the only
 thing that comes over the wire is the engine itself.
 
-This is round 2 of the demo. Round 1 was a single 985-line `index.html`: a
-working pointer-lock FPS with two patrolling drones on a ~50m terrace, but with
-no textures, no environment map, no anti-aliasing, no wall collision and no
-line-of-sight. This rebuilds it as a subsystem-partitioned engine over a
-~190 × 210m sky archipelago with a four-stage campaign.
+You play **Commander Jace Valtor** of the Concord Sentinels against the **Void
+Syndicate**, who hold the sky-city and are bleeding dark energy into the Expanse
+through their Anchors.
+
+Round 1 was a single 985-line `index.html`. Round 2 rebuilt it as a
+subsystem-partitioned engine over a ~190 × 210m sky archipelago with a
+four-stage campaign. Round 3 fixed two blockers that made it unplayable in
+places, overhauled traversal, and adopted the franchise identity.
 
 ---
 
@@ -72,9 +75,17 @@ and swings into place when the beacons fall.
 Four stages: **Secure the Landing** → **Cross the Market Tier** → **Restore the
 Great Span** → **Take the Temple**.
 
-Three enemy archetypes, distinguishable by silhouette alone at range:
-**Skirmisher** (fast, flanks), **Sentry** (slow, accurate, long reach),
-**Heavy** (bulky, high HP, suppressive).
+Three Void Syndicate archetypes, distinguishable by silhouette alone at range:
+**Void Wraith** (fast, flanks), **Void Warden** (slow, accurate, long reach),
+**Void Colossus** (bulky, high HP, suppressive). They glow violet — dark energy
+against a warm marble-and-gold world, which is both the faction's visual
+language and the reason you can pick a hostile out of the scene at distance.
+
+Districts are never loaded: the archipelago is one contiguous scene. What marks
+a crossing is authored rather than technical — each district declares its own
+fog, exposure, grade and reverb, and the player's position blends between them
+continuously, so walking a bridge into the Sunken Vaults is a gradient into cold,
+close, reverberant air rather than a switch.
 
 ---
 
@@ -91,7 +102,8 @@ src/
   render/     Renderer, composer chain, follow-frustum shadows, colour grade
   materials/  Procedural PBR bakery — 14 surfaces, albedo/normal/ORM
   sky/        Rayleigh/Mie atmosphere, cloud sea, PMREM environment probe
-  world/      Archipelago builder, modular kit, collider bake, batching
+  world/      Archipelago builder, modular kit, collider bake, batching,
+              per-district atmosphere (zones.js)
   physics/    Spatial-hash broadphase, capsule solver, raycasts, debris
   player/     Movement state machine, camera dynamics, health
   weapons/    Procedural rifle, viewmodel rig, hitscan ballistics, recoil
@@ -115,6 +127,25 @@ keep the thing maintainable:
 Simulation runs at a fixed 120 Hz with a clamped accumulator; rendering runs at
 whatever the display gives you.
 
+### Collider shapes
+
+Four kinds, and the reason there are four is the round-3 bridge bug. Axis-aligned
+boxes are cheap and correct for architecture that runs along the world axes, and
+badly wrong for anything diagonal.
+
+| Shape | Blocks horizontally | Used for |
+|---|---|---|
+| `box` | yes | Decks, walls, anything axis-aligned |
+| `obox` | yes | Parapets and walls at an angle — no AABB inflation |
+| `cyl` | yes | Columns |
+| `ramp` | **no** | Bridges and stairs: an oriented sloped surface |
+
+`ramp` is ground-only by design. It never resolves horizontally, so there is no
+step-up to be refused and no seam to catch on — one ramp replaces the whole run
+of stepped boxes a bridge used to emit, arch included. Stairs keep their visible
+treads but collide against a single ramp underneath, which is the standard trick
+and makes a staircase one continuous surface rather than a run of ledges.
+
 Every smoothed value — camera roll, head bob, weapon sway, recoil recovery, FOV,
 drone banking — uses `damp()` from `core/rng.js` rather than
 `lerp(current, target, dt * rate)`. The naive form is fine at 60fps and
@@ -122,6 +153,29 @@ catastrophic on a stutter: once a frame exceeds `1/rate` seconds the interpolant
 passes 1 and the value overshoots the target, which shows up as the camera
 snapping to a wild angle. `1 - exp(-rate * dt)` is the same curve and cannot
 overshoot.
+
+### Round 3: the two blockers
+
+Both were structural, and both are now covered by regression tests that failed
+before the fix.
+
+**You could not aim.** The optic was built from two solid boxes — there was no
+aperture. Aiming put a dark slab across the middle of the screen with the lens
+and reticle drawn in front of it, so it looked like a sight right up until you
+tried to use it. It is now an open tube with ring bezels and a real aperture.
+The aim point also sat 6.7 degrees below screen centre, so the reticle
+disagreed with where rounds actually went, and the viewmodel never zoomed with
+the world.
+
+**You could not walk across a bridge.** Two faults, both required to reproduce:
+`_hasHeadroom` treated any collider whose top was above the new foot height as
+an overhead obstruction — including the next deck segment up the arch, which
+therefore vetoed the step onto itself; and `_bridge()` emitted one axis-aligned
+box per segment, which on a 45-degree span turns a 2.5m plank into a 5.3m
+square that overlaps its neighbours. The axis-aligned bridge survived this. The
+two diagonal spans did not, which is why those were the ones that trapped you.
+
+The fix is a new collider type rather than a tolerance tweak — see below.
 
 ### What changed from round 1, and why
 
@@ -216,6 +270,13 @@ Being straight about where this lands versus the bar:
   the most version-fragile pass in the addons set.
 - **Column flutes are additive strips, not cut geometry.** There is no CSG here;
   they read correctly at gameplay distance and not at nose distance.
+- **Screen-space reflections and contact-hardening shadows are not implemented.**
+  Both were scoped for round 3 and neither shipped. True PCSS needs overriding
+  Three's shadow shader chunks globally, which fails closed — if the override
+  does not compile against the pinned version, nothing in the scene renders, and
+  that is not a risk worth taking for softer shadow edges. SSR was dropped for
+  time rather than for a principled reason. What did ship is macro variation and
+  volumetric light shafts.
 - **No touch or gamepad input.** Desktop, mouse and keyboard only.
 - **Enemies hover rather than walk.** That is a deliberate choice — a procedural
   walk cycle at this budget looks worse than no walk cycle, and hovering is
