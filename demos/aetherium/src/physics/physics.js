@@ -18,6 +18,73 @@ const CELL = 8;
 const SKIN = 0.02;
 const MAX_SUBSTEP = 0.35;
 
+// ── Collider shapes ───────────────────────────────────────────────────────
+//
+// Four kinds, and the reason there are four is worth stating. Axis-aligned
+// boxes are cheap and correct for architecture that runs along the world axes,
+// which most of this level does. They are badly wrong for anything diagonal:
+// the AABB of a 2.5m plank at 45 degrees is a 5.3m square, so a diagonal bridge
+// built from per-segment boxes has every segment sitting inside its
+// neighbours' volumes. That is what made bridges impassable.
+//
+//   box   axis-aligned, blocks horizontally, walkable on top
+//   obox  yaw-rotated box — same, without the diagonal inflation
+//   cyl   vertical cylinder, for columns
+//   ramp  oriented sloped surface, GROUND ONLY — never blocks horizontally,
+//         so there is no step-up to be refused and no seam to catch on
+
+// Surface height of a ramp at a world point, or null if outside its footprint.
+export function rampSurfaceY(c, x, z) {
+  const px = x - c.x;
+  const pz = z - c.z;
+  const u = px * c.dx + pz * c.dz;        // along the run
+  const v = -px * c.dz + pz * c.dx;       // across it
+  if (u < -c.halfLen || u > c.halfLen) return null;
+  if (v < -c.halfWidth || v > c.halfWidth) return null;
+  const t = (u + c.halfLen) / (2 * c.halfLen);
+  let y = c.y0 + (c.y1 - c.y0) * t;
+  if (c.arch) y += c.arch * Math.sin(t * Math.PI);
+  return y;
+}
+
+// World offset -> oriented-box local space (rotate by -yaw).
+function oboxLocalX(c, px, pz) { return px * c.cos + pz * c.sin; }
+function oboxLocalZ(c, px, pz) { return -px * c.sin + pz * c.cos; }
+
+// Does the capsule footprint overlap this collider's footprint?
+//
+// The comparisons are `<=`, not `<`, and that matters: `groundAt` is a point
+// query and passes radius 0, so a strict `<` would compare `0 < 0` and report
+// that a point sitting squarely inside a box is outside it. That is exactly
+// what happened on the first pass — the navigation grid collapsed from 7000
+// walkable cells to 439 because every point query missed.
+function overlapsFootprint(c, x, z, radius) {
+  if (c.type === 'cyl') {
+    const dx = x - c.x, dz = z - c.z;
+    const r = radius + c.radius;
+    return dx * dx + dz * dz <= r * r;
+  }
+  if (c.type === 'obox') {
+    const px = x - c.x, pz = z - c.z;
+    const lx = oboxLocalX(c, px, pz);
+    const lz = oboxLocalZ(c, px, pz);
+    const qx = lx - clamp(lx, -c.hx, c.hx);
+    const qz = lz - clamp(lz, -c.hz, c.hz);
+    return qx * qx + qz * qz <= radius * radius;
+  }
+  if (c.type === 'ramp') return rampSurfaceY(c, x, z) !== null;
+  const cx = clamp(x, c.minX, c.maxX);
+  const cz = clamp(z, c.minZ, c.maxZ);
+  const dx = x - cx, dz = z - cz;
+  return dx * dx + dz * dz <= radius * radius;
+}
+
+// Top surface of a collider under a point, or null when the point is outside.
+function topAt(c, x, z, radius) {
+  if (c.type === 'ramp') return rampSurfaceY(c, x, z);
+  return overlapsFootprint(c, x, z, radius) ? c.maxY : null;
+}
+
 export class PhysicsSystem {
   constructor() {
     this.colliders = [];
@@ -42,7 +109,7 @@ export class PhysicsSystem {
   _rebuildGrid() {
     this.grid.clear();
     for (let i = 0; i < this.colliders.length; i++) {
-      const c = this.colliders[i];
+      const c = this._prepare(this.colliders[i]);
       const b = this._bounds(c);
       const x0 = Math.floor(b.minX / CELL), x1 = Math.floor(b.maxX / CELL);
       const z0 = Math.floor(b.minZ / CELL), z1 = Math.floor(b.maxZ / CELL);
@@ -64,6 +131,42 @@ export class PhysicsSystem {
         minY: c.minY, maxY: c.maxY,
         minZ: c.z - c.radius, maxZ: c.z + c.radius
       };
+    }
+    if (c.type === 'obox') {
+      const ex = c.hx * Math.abs(c.cos) + c.hz * Math.abs(c.sin);
+      const ez = c.hx * Math.abs(c.sin) + c.hz * Math.abs(c.cos);
+      return {
+        minX: c.x - ex, maxX: c.x + ex,
+        minY: c.minY, maxY: c.maxY,
+        minZ: c.z - ez, maxZ: c.z + ez
+      };
+    }
+    if (c.type === 'ramp') {
+      const ex = c.halfLen * Math.abs(c.dx) + c.halfWidth * Math.abs(c.dz);
+      const ez = c.halfLen * Math.abs(c.dz) + c.halfWidth * Math.abs(c.dx);
+      return {
+        minX: c.x - ex, maxX: c.x + ex,
+        minY: c.minY, maxY: c.maxY,
+        minZ: c.z - ez, maxZ: c.z + ez
+      };
+    }
+    return c;
+  }
+
+  // Normalises the shorthand each collider factory emits into the derived
+  // fields the solver expects. Called once at bake time, not per frame.
+  _prepare(c) {
+    if (c.type === 'obox' && c.cos === undefined) {
+      c.cos = Math.cos(c.yaw);
+      c.sin = Math.sin(c.yaw);
+      c.minY = c.y - c.hy;
+      c.maxY = c.y + c.hy;
+    }
+    if (c.type === 'ramp' && c.minY === undefined) {
+      const lo = Math.min(c.y0, c.y1);
+      const hi = Math.max(c.y0, c.y1) + Math.max(0, c.arch || 0);
+      c.minY = lo - (c.thickness || 1.0);
+      c.maxY = hi;
     }
     return c;
   }
@@ -118,6 +221,12 @@ export class PhysicsSystem {
     // Then vertical.
     pos.y += delta.y;
     this._resolveVertical(pos, radius, height, state, delta.y);
+
+    // Ground snapping. Only when we were already on the ground and are not
+    // moving upward — otherwise this would cancel jumps.
+    if (!state.grounded && state.wasGrounded && delta.y <= 0) {
+      this._snapToGround(pos, radius, height, state, state.stepHeight);
+    }
     return state;
   }
 
@@ -129,9 +238,59 @@ export class PhysicsSystem {
 
     for (let i = 0; i < list.length; i++) {
       const c = list[i];
+      // Ramps are walkable surfaces, never walls. This is the whole point of
+      // the type: there is no side to be stopped by, so a sloped bridge cannot
+      // trap you no matter how it is oriented.
+      if (c.type === 'ramp') continue;
+
       // Vertical overlap test with a small tolerance, so standing exactly on a
       // surface is not read as colliding with its side.
       if (c.maxY <= feet + 0.06 || c.minY >= head - 0.02) continue;
+
+      if (c.type === 'obox') {
+        const px = pos.x - c.x;
+        const pz = pos.z - c.z;
+        const lx = oboxLocalX(c, px, pz);
+        const lz = oboxLocalZ(c, px, pz);
+        const qx = lx - clamp(lx, -c.hx, c.hx);
+        const qz = lz - clamp(lz, -c.hz, c.hz);
+        const d2 = qx * qx + qz * qz;
+        if (d2 >= radius * radius && d2 > 1e-9) continue;
+
+        if (c.climbable && c.maxY - feet <= state.stepHeight && c.maxY > feet &&
+          this._hasHeadroom(pos, radius, height, c.maxY, state.stepHeight)) {
+          pos.y = c.maxY + SKIN;
+          state.steppedUp = c.maxY - feet;
+          continue;
+        }
+
+        // Resolve in the box's own frame, then rotate the push back out.
+        let nx, nz;
+        if (d2 > 1e-9) {
+          const d = Math.sqrt(d2);
+          const push = (radius - d) + SKIN;
+          nx = (qx / d) * push;
+          nz = (qz / d) * push;
+        } else {
+          const pxPos = c.hx - lx + radius;
+          const pxNeg = lx + c.hx + radius;
+          const pzPos = c.hz - lz + radius;
+          const pzNeg = lz + c.hz + radius;
+          const m = Math.min(pxPos, pxNeg, pzPos, pzNeg);
+          if (m === pxPos) { nx = pxPos; nz = 0; }
+          else if (m === pxNeg) { nx = -pxNeg; nz = 0; }
+          else if (m === pzPos) { nx = 0; nz = pzPos; }
+          else { nx = 0; nz = -pzNeg; }
+        }
+        const wx = nx * c.cos - nz * c.sin;
+        const wz = nx * c.sin + nz * c.cos;
+        pos.x += wx;
+        pos.z += wz;
+        const wl = Math.hypot(wx, wz) || 1;
+        state.wallNormal.set(wx / wl, 0, wz / wl);
+        state.hitWall = true;
+        continue;
+      }
 
       if (c.type === 'cyl') {
         const dx = pos.x - c.x;
@@ -140,7 +299,8 @@ export class PhysicsSystem {
         const minD = radius + c.radius;
         if (d >= minD || d < 1e-6) continue;
         // Step up onto low obstacles instead of being stopped by a kerb.
-        if (c.climbable && c.maxY - feet <= state.stepHeight && this._hasHeadroom(pos, radius, height, c.maxY)) {
+        if (c.climbable && c.maxY - feet <= state.stepHeight &&
+          this._hasHeadroom(pos, radius, height, c.maxY, state.stepHeight)) {
           pos.y = c.maxY + SKIN;
           state.steppedUp = c.maxY - feet;
           continue;
@@ -164,7 +324,7 @@ export class PhysicsSystem {
         }
 
         if (c.climbable && c.maxY - feet <= state.stepHeight && c.maxY > feet &&
-          this._hasHeadroom(pos, radius, height, c.maxY)) {
+          this._hasHeadroom(pos, radius, height, c.maxY, state.stepHeight)) {
           pos.y = c.maxY + SKIN;
           state.steppedUp = c.maxY - feet;
           continue;
@@ -193,19 +353,50 @@ export class PhysicsSystem {
     }
   }
 
-  _hasHeadroom(pos, radius, height, newFeet) {
+  // Can the capsule stand with its feet at `newFeet` without being inside
+  // something?
+  //
+  // The subtlety that broke bridges: a collider whose top is only slightly
+  // above the new foot height is not a ceiling, it is the next step. The
+  // original test rejected any collider with `maxY > newFeet`, so the next
+  // deck segment up an arch vetoed the step onto the one before it — and
+  // because diagonal segments have wildly inflated bounds, that segment
+  // genuinely did overlap where you were standing. Anything you could also
+  // step onto is skipped.
+  _hasHeadroom(pos, radius, height, newFeet, stepHeight = 0) {
     const list = this.query(pos.x - radius, pos.z - radius, pos.x + radius, pos.z + radius);
     const head = newFeet + height;
     for (let i = 0; i < list.length; i++) {
       const c = list[i];
-      if (c.minY >= head - 0.05 || c.maxY <= newFeet + 0.05) continue;
-      if (c.type === 'cyl') {
-        if (Math.hypot(pos.x - c.x, pos.z - c.z) < radius + c.radius) return false;
-      } else if (pos.x + radius > c.minX && pos.x - radius < c.maxX &&
-        pos.z + radius > c.minZ && pos.z - radius < c.maxZ) {
-        return false;
-      }
+      if (c.type === 'ramp') continue;              // walkable, never a ceiling
+      if (c.minY >= head - 0.05) continue;          // entirely above the head
+      if (c.maxY <= newFeet + 0.05) continue;       // entirely below the feet
+      if (c.climbable !== false && c.maxY <= newFeet + stepHeight) continue;
+      if (overlapsFootprint(c, pos.x, pos.z, radius)) return false;
     }
+    return true;
+  }
+
+  // Probe downward for a surface within `maxDrop` of the feet.
+  //
+  // Without this the player leaves the ground on every downward step and every
+  // arch crest, which reads as a constant series of little hops. Real
+  // controllers stick to the ground unless you jump.
+  _snapToGround(pos, radius, height, state, maxDrop) {
+    const list = this.query(pos.x - radius, pos.z - radius, pos.x + radius, pos.z + radius);
+    let best = -Infinity;
+    let surface = 'stone';
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      const top = topAt(c, pos.x, pos.z, radius);
+      if (top === null) continue;
+      if (top > pos.y + 0.02 || top < pos.y - maxDrop) continue;
+      if (top > best) { best = top; surface = c.surface; }
+    }
+    if (best === -Infinity) return false;
+    pos.y = best;
+    state.grounded = true;
+    state.groundSurface = surface;
     return true;
   }
 
@@ -217,23 +408,19 @@ export class PhysicsSystem {
 
     for (let i = 0; i < list.length; i++) {
       const c = list[i];
-      let overlaps;
-      if (c.type === 'cyl') {
-        overlaps = Math.hypot(pos.x - c.x, pos.z - c.z) < radius + c.radius;
-      } else {
-        const cx = clamp(pos.x, c.minX, c.maxX);
-        const cz = clamp(pos.z, c.minZ, c.maxZ);
-        overlaps = (pos.x - cx) ** 2 + (pos.z - cz) ** 2 < radius * radius;
-      }
-      if (!overlaps) continue;
+      // Ramps report the height of the slope directly under the capsule, so
+      // walking one is a continuous surface rather than a run of steps.
+      const top = topAt(c, pos.x, pos.z, radius);
+      if (top === null) continue;
 
       // Surfaces at or just below the feet are ground candidates.
-      if (c.maxY <= pos.y + Math.max(0.12, -dy) + SKIN && c.maxY > bestTop) {
-        bestTop = c.maxY;
+      if (top <= pos.y + Math.max(0.12, -dy) + SKIN && top > bestTop) {
+        bestTop = top;
         bestSurface = c.surface;
       }
-      // Surfaces above the head are ceiling candidates.
-      if (c.minY >= pos.y + height - SKIN && c.minY < ceiling) {
+      // Surfaces above the head are ceiling candidates. A ramp has no
+      // underside you can hit your head on in this level.
+      if (c.type !== 'ramp' && c.minY >= pos.y + height - SKIN && c.minY < ceiling) {
         ceiling = c.minY;
       }
     }
@@ -256,13 +443,12 @@ export class PhysicsSystem {
     let best = null;
     for (let i = 0; i < list.length; i++) {
       const c = list[i];
-      if (c.maxY > fromY) continue;
-      if (c.maxY < fromY - maxDrop) continue;
-      let inside;
-      if (c.type === 'cyl') inside = Math.hypot(x - c.x, z - c.z) <= c.radius;
-      else inside = x >= c.minX && x <= c.maxX && z >= c.minZ && z <= c.maxZ;
-      if (inside && (best === null || c.maxY > best.y)) {
-        best = { y: c.maxY, surface: c.surface, collider: c };
+      // Radius 0 — this is a point query, not a capsule.
+      const top = topAt(c, x, z, 0);
+      if (top === null) continue;
+      if (top > fromY || top < fromY - maxDrop) continue;
+      if (best === null || top > best.y) {
+        best = { y: top, surface: c.surface, collider: c };
       }
     }
     return best;
@@ -302,9 +488,10 @@ export class PhysicsSystem {
             c._stamp = this._stamp;
             if (c.active === false) continue;
             if (sightOnly && c.blocksSight === false) continue;
-            const d = c.type === 'cyl'
-              ? this._rayCylinder(origin, dir, c, best)
-              : this._rayBox(origin, dir, c, best);
+            const d = c.type === 'cyl' ? this._rayCylinder(origin, dir, c, best)
+              : c.type === 'obox' ? this._rayObox(origin, dir, c, best)
+                : c.type === 'ramp' ? this._rayRamp(origin, dir, c, best)
+                  : this._rayBox(origin, dir, c, best);
             if (d !== null && d < best) {
               best = d;
               hit.hit = true;
@@ -356,6 +543,80 @@ export class PhysicsSystem {
     if (tmin <= 0) return null;
     this._lastNormal.set(nx, ny, nz);
     return tmin;
+  }
+
+  // An oriented box is a plain slab test in the box's own frame.
+  _rayObox(o, d, c, maxT) {
+    const px = o.x - c.x;
+    const pz = o.z - c.z;
+    const lo = {
+      x: oboxLocalX(c, px, pz),
+      y: o.y - c.y,
+      z: oboxLocalZ(c, px, pz)
+    };
+    const ld = {
+      x: oboxLocalX(c, d.x, d.z),
+      y: d.y,
+      z: oboxLocalZ(c, d.x, d.z)
+    };
+    const local = {
+      minX: -c.hx, maxX: c.hx,
+      minY: -c.hy, maxY: c.hy,
+      minZ: -c.hz, maxZ: c.hz
+    };
+    const t = this._rayBox(lo, ld, local, maxT);
+    if (t === null) return null;
+    // _lastNormal is in box space; rotate it back to world.
+    const n = this._lastNormal;
+    const nx = n.x * c.cos - n.z * c.sin;
+    const nz = n.x * c.sin + n.z * c.cos;
+    n.set(nx, n.y, nz);
+    return t;
+  }
+
+  // Ramps have no closed-form intersection, so march the ray and find where it
+  // first drops below the surface, then bisect for a usable point. Accurate to
+  // a few centimetres, which is well inside what bullets and vision need.
+  _rayRamp(o, d, c, maxT) {
+    const b = this._bounds(c);
+    // Cheap reject against the ramp's AABB first.
+    if (this._rayBox(o, d, b, maxT) === null) {
+      const inside = o.x >= b.minX && o.x <= b.maxX && o.y >= b.minY &&
+        o.y <= b.maxY && o.z >= b.minZ && o.z <= b.maxZ;
+      if (!inside) return null;
+    }
+
+    const STEP = 0.35;
+    let prevT = 0;
+    let prevAbove = null;
+    for (let t = 0; t <= maxT; t = Math.min(t + STEP, maxT)) {
+      const x = o.x + d.x * t;
+      const y = o.y + d.y * t;
+      const z = o.z + d.z * t;
+      const s = rampSurfaceY(c, x, z);
+      if (s !== null) {
+        const above = y >= s;
+        if (prevAbove === true && !above) {
+          // Crossed the surface between prevT and t — bisect.
+          let lo = prevT, hi = t;
+          for (let k = 0; k < 8; k++) {
+            const mid = (lo + hi) * 0.5;
+            const my = o.y + d.y * mid;
+            const ms = rampSurfaceY(c, o.x + d.x * mid, o.z + d.z * mid);
+            if (ms === null || my >= ms) lo = mid; else hi = mid;
+          }
+          if (hi <= 0 || hi > maxT) return null;
+          this._lastNormal.set(0, 1, 0);
+          return hi;
+        }
+        prevAbove = above;
+      } else {
+        prevAbove = null;
+      }
+      prevT = t;
+      if (t >= maxT) break;
+    }
+    return null;
   }
 
   _rayCylinder(o, d, c, maxT) {

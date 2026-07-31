@@ -194,8 +194,14 @@ export class Kit {
     }
   }
 
-  // A run of steps. Each tread gets a collider so the player controller can
-  // step up it naturally instead of needing a ramp special case.
+  // A run of steps: visible treads, but collision is one ramp underneath.
+  //
+  // This is the standard trick and it is worth doing even where per-tread
+  // boxes technically work. Walking a staircase as a series of step-ups means
+  // the controller has to re-resolve a ledge every tread — it costs speed, it
+  // makes the camera stutter, and any overlap between treads risks the
+  // step-up being refused outright. A ramp is one continuous surface, and the
+  // treads you can see are what sell it as a staircase.
   stairs(x, y, z, width, rise, run, count, dirX, dirZ, matName = 'marble') {
     const b = this.b;
     const mat = this.mat(matName);
@@ -203,21 +209,27 @@ export class Kit {
     const len = Math.hypot(dirX, dirZ) || 1;
     const dx = dirX / len;
     const dz = dirZ / len;
-    const px = -dz;
-    const pz = dx;
 
     for (let i = 0; i < count; i++) {
       const cx = x + dx * (run * (i + 0.5));
       const cz = z + dz * (run * (i + 0.5));
       const cy = y + rise * (i + 0.5);
       // Each step is a full-height block down to the previous tread, so there
-      // are no gaps to fall through.
+      // are no gaps to see through.
       const h = rise;
       const sizeX = Math.abs(dx) > Math.abs(dz) ? run : width;
       const sizeZ = Math.abs(dx) > Math.abs(dz) ? width : run;
       b.add(boxGeo(sizeX, h, sizeZ, tile), mat, makeMatrix([cx, cy, cz]));
-      b.box([cx, cy, cz], [sizeX, h, sizeZ], 'stone');
     }
+
+    // The collision surface runs from the bottom of the first tread to the top
+    // of the last, half a tread proud at each end so you step on and off
+    // cleanly rather than clipping the first riser.
+    b.ramp(
+      [x - dx * run * 0.5, y, z - dz * run * 0.5],
+      [x + dx * run * (count + 0.5), y + rise * count, z + dz * run * (count + 0.5)],
+      width, 'stone'
+    );
     return {
       topX: x + dx * run * count,
       topY: y + rise * count,

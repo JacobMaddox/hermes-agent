@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { scratch } from '../core/loop.js';
 import { clamp, lerp, damp, smoothstep } from '../core/rng.js';
 import { buildRifle } from './rifle.js';
-import { LAYER_VIEWMODEL } from '../render/render.js';
+import { VIEWMODEL_FOV_HIP, VIEWMODEL_FOV_ADS } from '../render/render.js';
 
 // Weapons and ballistics.
 //
@@ -36,8 +36,12 @@ export const WEAPON = {
   recoilKick: 0.055,
   recoilRoll: 0.03,
 
-  adsTime: 0.16,
-  swapTime: 0.5
+  adsTime: 0.14,
+  swapTime: 0.5,
+  // Time to bring the weapon back on target after sprinting. Without it you
+  // can fire accurately out of a full sprint, which removes any cost from
+  // running everywhere.
+  sprintRaiseTime: 0.22
 };
 
 // Deterministic recoil pattern: a repeatable climb with a horizontal S-curve,
@@ -74,6 +78,8 @@ export class WeaponSystem {
     this._hitMarkerT = 0;
     this._lastHitWasKill = false;
     this._shells = [];
+    this._raiseT = 0;
+    this._wasSprinting = false;
   }
 
   async init() {
@@ -85,10 +91,13 @@ export class WeaponSystem {
     this.ctx.camera.add(this.group);
     this.group.position.copy(HIP);
 
-    // Where the aim point must land in camera space when fully aimed. Slightly
-    // below centre reads better than dead centre because the reticle sits on
-    // the optic, not the barrel.
-    this._adsTarget = new THREE.Vector3(0, -0.028, -0.24);
+    // Where the aim point must land in camera space when fully aimed.
+    //
+    // Dead centre, and that is not a style choice: shots leave from the camera
+    // axis, so if the optic sits anywhere else the reticle lies about where
+    // the round goes. The previous -0.028 put it 6.7 degrees low. Pushed a
+    // little further out than before so the receiver covers less of the frame.
+    this._adsTarget = new THREE.Vector3(0, 0, -0.30);
 
     this._buildShellPool();
   }
@@ -135,6 +144,9 @@ export class WeaponSystem {
   fire() {
     const player = this.ctx.get('player');
     if (this.reloading || this._cooldown > 0) return;
+    // The weapon is stowed across the body while sprinting; it has to come up
+    // before it can fire.
+    if (this._raiseT > 0) return;
     if (this.ammo <= 0) {
       this.ctx.bus.emit('weapon:dryfire', {});
       this._cooldown = 0.22;
@@ -352,6 +364,13 @@ export class WeaponSystem {
     this._cooldown = Math.max(0, this._cooldown - dt);
     this._updateReload(dt);
 
+    // Sprinting stows the weapon; dropping out of a sprint starts the raise.
+    if (player.sprinting) {
+      this._raiseT = WEAPON.sprintRaiseTime;
+    } else if (this._raiseT > 0) {
+      this._raiseT = Math.max(0, this._raiseT - dt);
+    }
+
     if (this._triggerHeld && this._active()) this.fire();
     // Recoil pattern resets once you stop shooting for a beat.
     if (!this._triggerHeld && this._cooldown <= 0) {
@@ -361,6 +380,11 @@ export class WeaponSystem {
     const ads = player.ads && !this.reloading && !player.sprinting;
     this._adsT = clamp(this._adsT + (ads ? dt / WEAPON.adsTime : -dt / WEAPON.adsTime), 0, 1);
     const adsE = smoothstep(0, 1, this._adsT);
+
+    // The viewmodel zooms with the world so aiming reads as magnification.
+    this.ctx.get('render').setViewmodelFov(
+      lerp(VIEWMODEL_FOV_HIP, VIEWMODEL_FOV_ADS, adsE)
+    );
 
     // Sway: the weapon lags behind fast look changes and settles back.
     const dYaw = player.yaw - this._lastYaw;
@@ -468,6 +492,7 @@ export class WeaponSystem {
     this._triggerHeld = false;
     this._kick = 0;
     this._adsT = 0;
+    this._raiseT = 0;
   }
 }
 

@@ -206,6 +206,51 @@ export class Builder {
     return this.colliders[this.colliders.length - 1];
   }
 
+  // Yaw-rotated box. Use this for anything that does not run along a world
+  // axis — a diagonal parapet emitted as an AABB inflates enormously and eats
+  // the walkway beside it.
+  obox(pos, size, yaw, surface = 'stone', opts = {}) {
+    this.colliders.push({
+      type: 'obox',
+      x: pos[0], y: pos[1], z: pos[2],
+      hx: size[0] / 2, hy: size[1] / 2, hz: size[2] / 2,
+      yaw,
+      surface,
+      climbable: opts.climbable !== false,
+      blocksSight: opts.blocksSight !== false
+    });
+    return this.colliders[this.colliders.length - 1];
+  }
+
+  // An oriented sloped surface: walkable, never a wall.
+  //
+  // `from` and `to` are the centres of the two ends. `arch` raises the middle,
+  // matching the visible camber of a bridge deck. One of these replaces a run
+  // of stepped boxes, which is what makes sloped traversal continuous rather
+  // than a sequence of ledges to be climbed.
+  ramp(from, to, width, surface = 'stone', opts = {}) {
+    const dx = to[0] - from[0];
+    const dz = to[2] - from[2];
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-4) return null;
+    this.colliders.push({
+      type: 'ramp',
+      x: (from[0] + to[0]) / 2,
+      z: (from[2] + to[2]) / 2,
+      dx: dx / len, dz: dz / len,
+      halfLen: len / 2,
+      halfWidth: width / 2,
+      y0: from[1], y1: to[1],
+      arch: opts.arch || 0,
+      thickness: opts.thickness || 1.2,
+      surface,
+      climbable: true,
+      blocksSight: opts.blocksSight !== false,
+      active: opts.active !== false
+    });
+    return this.colliders[this.colliders.length - 1];
+  }
+
   // Vertical cylinder collider — columns resolve much better against this than
   // against a square box, and the map is full of columns.
   cylinder(pos, radius, height, surface = 'stone', opts = {}) {

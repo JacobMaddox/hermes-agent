@@ -734,46 +734,69 @@ export class WorldSystem {
   }
 
   // Deck + parapet + underside ribs spanning two points, with a slight arch.
+  //
+  // The visible deck is still built from segments so it can follow the camber,
+  // but collision is a SINGLE ramp across the whole span. The previous version
+  // emitted one axis-aligned box per segment: on a diagonal bridge each 2.5m
+  // plank became a 5.3m square that overlapped its neighbours, and since every
+  // segment then sat inside the next one's volume, the step onto it was
+  // refused. That is what forced you to jump from piece to piece.
   _bridge(kit, b, x0, y0, z0, x1, y1, z1, width) {
     const dx = x1 - x0, dz = z1 - z0;
     const len = Math.hypot(dx, dz);
     const ang = Math.atan2(dz, dx);
     const segs = Math.max(4, Math.ceil(len / 2.5));
     const deckMat = kit.mat('sandstone');
+    const arch = Math.min(1.6, len * 0.06);
 
+    // One collider for the whole deck. Walk-on, never a wall.
+    b.ramp([x0, y0, z0], [x1, y1, z1], width - 0.6, 'stone', { arch, blocksSight: false });
+
+    // Parapets as oriented boxes, split into a few pieces so each one hugs the
+    // camber instead of being one long box through the middle of the arch.
+    const pieces = Math.max(2, Math.ceil(len / 5));
+    for (let p = 0; p < pieces; p++) {
+      const t = (p + 0.5) / pieces;
+      const px = x0 + dx * t;
+      const pz = z0 + dz * t;
+      const py = y0 + (y1 - y0) * t + Math.sin(t * Math.PI) * arch;
+      for (const s of [-1, 1]) {
+        b.obox(
+          [px + Math.sin(ang) * s * (width / 2 - 0.15), py + 0.42,
+            pz - Math.cos(ang) * s * (width / 2 - 0.15)],
+          [len / pieces + 0.1, 0.85, 0.3], -ang,
+          'stone', { blocksSight: false, climbable: false }
+        );
+      }
+    }
+
+    // Visual geometry only from here down — collision is the ramp and the
+    // oriented parapets above.
     for (let i = 0; i < segs; i++) {
       const t = (i + 0.5) / segs;
       const x = x0 + dx * t;
       const z = z0 + dz * t;
       // Rise in the middle so it reads as an arch, not a plank.
-      const arch = Math.sin(t * Math.PI) * Math.min(1.6, len * 0.06);
-      const y = y0 + (y1 - y0) * t + arch;
+      const camber = Math.sin(t * Math.PI) * arch;
+      const y = y0 + (y1 - y0) * t + camber;
       const segLen = len / segs + 0.12;
 
       const g = boxGeo(segLen, 0.5, width, 2.5);
       b.add(g, deckMat, makeMatrix([x, y - 0.25, z], [0, -ang, 0]));
       g.dispose();
-      b.box([x, y - 0.25, z],
-        [Math.abs(Math.cos(ang)) * segLen + Math.abs(Math.sin(ang)) * width, 0.5,
-        Math.abs(Math.sin(ang)) * segLen + Math.abs(Math.cos(ang)) * width], 'stone');
 
-      // Parapets.
       for (const s of [-1, 1]) {
         const px = x + Math.sin(ang) * s * (width / 2 - 0.15);
         const pz = z - Math.cos(ang) * s * (width / 2 - 0.15);
         const p = boxGeo(segLen, 0.85, 0.3, 2);
         b.add(p, kit.mat('marble'), makeMatrix([px, y + 0.42, pz], [0, -ang, 0]));
         p.dispose();
-        b.box([px, y + 0.42, pz],
-          [Math.abs(Math.cos(ang)) * segLen + Math.abs(Math.sin(ang)) * 0.3, 0.85,
-          Math.abs(Math.sin(ang)) * segLen + Math.abs(Math.cos(ang)) * 0.3],
-          'stone', { blocksSight: false });
       }
 
       // Underside ribs every other segment.
       if (i % 2 === 0) {
-        const rib = boxGeo(0.5, 1.2 + arch, width * 0.8, 2);
-        b.add(rib, deckMat, makeMatrix([x, y - 1.1 - arch / 2, z], [0, -ang, 0]));
+        const rib = boxGeo(0.5, 1.2 + camber, width * 0.8, 2);
+        b.add(rib, deckMat, makeMatrix([x, y - 1.1 - camber / 2, z], [0, -ang, 0]));
         rib.dispose();
       }
     }
@@ -812,28 +835,14 @@ export class WorldSystem {
     group.rotation.z = -1.15;
     this.props.add(group);
 
-    // Colliders for the deployed position, registered up front but flagged
-    // inactive so the physics broadphase can skip them until deployment.
-    const colliders = [];
-    const segs = Math.max(4, Math.ceil(len / 3));
-    for (let i = 0; i < segs; i++) {
-      const t = (i + 0.5) / segs;
-      const cx = x0 + dx * t;
-      const cz = z0 + dz * t;
-      const cy = y0 + (y1 - y0) * t;
-      const segLen = len / segs + 0.15;
-      const c = {
-        type: 'box',
-        minX: cx - (Math.abs(Math.cos(ang)) * segLen + Math.abs(Math.sin(ang)) * width) / 2,
-        maxX: cx + (Math.abs(Math.cos(ang)) * segLen + Math.abs(Math.sin(ang)) * width) / 2,
-        minY: cy - 0.5, maxY: cy,
-        minZ: cz - (Math.abs(Math.sin(ang)) * segLen + Math.abs(Math.cos(ang)) * width) / 2,
-        maxZ: cz + (Math.abs(Math.sin(ang)) * segLen + Math.abs(Math.cos(ang)) * width) / 2,
-        surface: 'stone', climbable: true, blocksSight: false, active: false
-      };
-      colliders.push(c);
-      this.builder.colliders.push(c);
-    }
+    // One ramp for the deployed position, registered up front but inactive so
+    // the broadphase skips it until the span swings into place. Same reasoning
+    // as `_bridge`: a diagonal span split into boxes is impassable.
+    const ramp = this.builder.ramp(
+      [x0, y0, z0], [x1, y1, z1], width - 0.6, 'stone',
+      { blocksSight: false, active: false }
+    );
+    const colliders = ramp ? [ramp] : [];
 
     this.span = {
       group, colliders, deployed: false, t: 0,

@@ -21,7 +21,8 @@ const SURFACE_FX = {
   glass: { colour: 0xcfe8ff, spark: 0.4, dust: 0.3, decal: 0x2a3540 },
   foliage: { colour: 0x6fa356, spark: 0.0, dust: 0.6, decal: 0x1d2a16 },
   aether: { colour: 0x63c4ff, spark: 0.9, dust: 0.4, decal: 0x123044 },
-  flesh: { colour: 0xff6a3a, spark: 0.3, dust: 0.2, decal: 0x2a0d08 }
+  // 'flesh' is the hit-a-Syndicate-unit surface; dark-energy violet, not blood.
+  flesh: { colour: 0xc060ff, spark: 0.3, dust: 0.2, decal: 0x1e0a2a }
 };
 
 const PARTICLE_VS = /* glsl */ `
@@ -444,7 +445,7 @@ export class FxSystem {
       const dir = scratch.v0.set(rng.spread(1), rng.spread(1), rng.spread(1)).normalize();
       const sp = rng.range(3, 12);
       this.emit(point.x, point.y, point.z, dir.x * sp, dir.y * sp + 3, dir.z * sp, {
-        colour: i % 4 === 0 ? 0xffcf7a : 0xff4a18,
+        colour: i % 4 === 0 ? 0xe8b0ff : 0xa030e0,
         size: rng.range(0.05, 0.2), life: rng.range(0.3, 0.9),
         drag: 2.2, gravity: 3, alpha: 0.9
       });
@@ -453,8 +454,8 @@ export class FxSystem {
     // Real debris with gravity and bounce, unlike round 1's straight-flying
     // shards that were secretly enemy projectiles.
     const mat = new THREE.MeshStandardMaterial({
-      color: 0x24262e, metalness: 0.85, roughness: 0.4,
-      emissive: 0xff3a12, emissiveIntensity: 0.7,
+      color: 0x201a2e, metalness: 0.85, roughness: 0.4,
+      emissive: 0xa030e0, emissiveIntensity: 0.7,
       transparent: true, opacity: 1
     });
     const count = Math.min(12, Math.round(this.ctx.quality.debrisBudget / 12));

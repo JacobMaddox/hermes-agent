@@ -89,9 +89,38 @@ export function buildRifle(mats) {
   put(boxGeo(0.066, 0.036, 0.045, 0.2), dark, 0, -0.055, 0.285);
 
   // ── Optic housing ─────────────────────────────────────────────────────
+  //
+  // This is the part that has to have a hole in it. The first version used two
+  // solid plates for the bezels, which meant aiming down the sight put a solid
+  // slab across the middle of the screen — the lens and reticle were drawn in
+  // front of it, so it looked like a sight right up until you tried to use it.
+  //
+  // The body is an open-ended tube and the bezels are rings, so the line from
+  // the eye through APERTURE_R at the optic's centre is genuinely clear.
+  const APERTURE_R = 0.019;
+  const BEZEL_R = 0.029;
+
+  // Mount block, below the sight line.
   put(boxGeo(0.044, 0.028, 0.11, 0.2), dark, 0, 0.10, -0.115);
-  put(boxGeo(0.052, 0.058, 0.012, 0.2), dark, 0, 0.128, -0.168);
-  put(boxGeo(0.052, 0.058, 0.012, 0.2), dark, 0, 0.128, -0.062);
+
+  // The optic needs its own material because it is the one part of the weapon
+  // that must render from both sides — you see the outside of the tube, and
+  // through the aperture you see the inside of its far wall. Cloned rather
+  // than mutating `dark`, which is shared with the entire world.
+  const opticMat = dark.clone();
+  opticMat.side = THREE.DoubleSide;
+  opticMat.name = 'optic';
+
+  // Tube: open at both ends, so the sight line passes straight through.
+  const tube = cylGeo(BEZEL_R * 0.88, BEZEL_R * 0.88, 0.106, 20, 0.2, true);
+  tube.rotateX(Math.PI / 2);
+  statics.push({ geometry: tube, material: opticMat, matrix: at(0, 0.128, -0.115) });
+
+  // Ring bezels front and rear — an annulus, not a plate.
+  for (const z of [-0.168, -0.062]) {
+    const ring = new THREE.RingGeometry(APERTURE_R, BEZEL_R, 24);
+    statics.push({ geometry: ring, material: opticMat, matrix: at(0, 0.128, z) });
+  }
 
   // ── Hands ─────────────────────────────────────────────────────────────
   // Left, wrapped around the handguard.
@@ -139,11 +168,13 @@ export function buildRifle(mats) {
   const trigger = add(new THREE.CapsuleGeometry(0.011, 0.042, 3, 6), skin,
     -0.010, -0.052, 0.006, 0.55, 0, 1.1);
 
-  // Optic lens: additive and unlit, so it reads as glass catching the sky.
+  // Optic lens: additive and unlit, so it tints the view rather than veiling
+  // it. Sized to the aperture and kept faint — this sits directly on the sight
+  // line, so anything heavier here undoes the point of cutting the hole.
   const lens = add(
-    new THREE.CircleGeometry(0.021, 20),
+    new THREE.CircleGeometry(APERTURE_R, 20),
     new THREE.MeshBasicMaterial({
-      color: 0x2a6fa8, transparent: true, opacity: 0.42,
+      color: 0x2a6fa8, transparent: true, opacity: 0.16,
       blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false
     }),
     0, 0.128, -0.055
@@ -175,6 +206,9 @@ export function buildRifle(mats) {
 
   return {
     group, aimPoint, muzzleTip, lens, reticle,
-    cell, cellGlow, chargeBar, trigger
+    cell, cellGlow, chargeBar, trigger,
+    // Exposed so the weapon rig and the headless aperture test can both reason
+    // about the sight line without duplicating the constant.
+    apertureRadius: APERTURE_R
   };
 }

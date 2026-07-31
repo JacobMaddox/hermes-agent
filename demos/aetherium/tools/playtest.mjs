@@ -88,7 +88,10 @@ const boot = await page.evaluate(() => window.AETHERIUM.stats());
 console.log(`  · preset=${await page.evaluate(() => window.AETHERIUM.quality)} ` +
   `colliders=${boot.colliders} navCells=${boot.navCells}`);
 
-if (boot.colliders < 400) fail(`only ${boot.colliders} colliders — world did not build`);
+// Lower than it looks: bridges and stairs now emit one ramp each instead of a
+// box per segment, so the total dropped by roughly a third while covering the
+// same geometry. This guards against the world failing to build at all.
+if (boot.colliders < 240) fail(`only ${boot.colliders} colliders — world did not build`);
 else pass(`world built (${boot.colliders} colliders)`);
 
 if (boot.navCells < 2000) fail(`only ${boot.navCells} nav cells — navigation grid is too sparse`);
@@ -132,7 +135,8 @@ for (const [label, x, y, z] of stops) {
     window.AETHERIUM.ctx.paused = false;
     window.AETHERIUM.teleport(x, y, z);
   }, [x, y, z]);
-  await page.waitForTimeout(320);
+  // Let gravity seat the player rather than sampling mid-fall.
+  await page.evaluate(() => window.AETHERIUM.step(0.8));
   const s = await page.evaluate(() => window.AETHERIUM.stats());
   const bad = s.playerPos.some((v) => !isFinite(v));
   if (bad) fail(`${label}: player position went non-finite (${s.playerPos})`);
@@ -157,23 +161,20 @@ const ammoAfter = await page.evaluate(() => window.AETHERIUM.stats().ammo);
 if (ammoAfter >= ammoBefore) fail(`firing did not consume ammo (${ammoBefore} -> ${ammoAfter})`);
 else pass(`fired 8 rounds (${ammoBefore} -> ${ammoAfter})`);
 
-await page.evaluate(() => {
-  window.AETHERIUM.ctx.paused = false;
-  window.AETHERIUM.ctx.get('weapons').startReload();
+// Reload runs off per-frame update, so drive it with simulated time rather
+// than wall-clock: at one frame a second a real-time wait would take a minute
+// to cover a two-second reload.
+const reloaded = await page.evaluate(() => {
+  const A = window.AETHERIUM;
+  A.ctx.paused = false;
+  const w = A.ctx.get('weapons');
+  w.startReload();
+  for (let i = 0; i < 240; i++) {
+    w.update(1 / 60);
+    if (!w.reloading) break;
+  }
+  return w.ammo;
 });
-// Poll rather than sleep a fixed interval: the loop clamps per-frame delta to
-// 250ms, so on a software rasteriser at 3fps simulated time runs far behind
-// wall-clock and a fixed wait would fail for reasons that have nothing to do
-// with the reload logic.
-let reloaded = 0;
-for (let i = 0; i < 60; i++) {
-  await page.waitForTimeout(500);
-  reloaded = await page.evaluate(() => {
-    window.AETHERIUM.ctx.paused = false;
-    return window.AETHERIUM.stats().ammo;
-  });
-  if (reloaded === 30) break;
-}
 if (reloaded !== 30) fail(`reload did not refill the magazine (got ${reloaded})`);
 else pass('reload refilled the magazine');
 
@@ -190,6 +191,140 @@ await page.waitForTimeout(600);
 const kills = await page.evaluate(() => window.AETHERIUM.ctx.get('player').stats.kills);
 if (kills < 1) fail('killing an actor did not register');
 else pass(`kill registered (${kills})`);
+
+// ── Traversal: walk it, never jump ──────────────────────────────────────────
+//
+// This is the regression test for the bridge bug. The player is driven with
+// real movement input and Space is never pressed, so if any span or stair
+// needs a jump to cross, arrival simply never happens and the test fails.
+console.log('\ntraversal (no jumping)');
+
+async function walkTo(label, from, to) {
+  // The whole walk happens inside one evaluate, stepping the simulation
+  // directly. Polling the page from Node instead would be gated on the render
+  // loop, which on a software rasteriser runs at about one frame a second —
+  // the test would time out long before the player crossed anything, and it
+  // would be measuring the rasteriser rather than the collision solver.
+  const res = await page.evaluate(([f, t]) => {
+    const A = window.AETHERIUM;
+    A.ctx.paused = false;
+    const p = A.ctx.get('player');
+
+    p.respawn({ x: f[0], y: f[1], z: f[2] });
+    p.position.set(f[0], f[1], f[2]);
+    p.locked = true;
+    for (const k in p.keys) p.keys[k] = false;
+
+    // Let gravity seat the player on the deck before setting off.
+    A.step(1.0);
+    const landed = p.grounded;
+
+    let best = Infinity;
+    let stalled = 0;
+    let arrived = false;
+    const trace = [];
+
+    for (let i = 0; i < 900; i++) {
+      // Steer toward the target and hold forward. Space is never pressed, so
+      // anything that needs a jump simply never gets crossed.
+      p.yaw = Math.atan2(-(t[0] - p.position.x), -(t[2] - p.position.z));
+      p.keys['KeyW'] = true;
+      p.keys['Space'] = false;
+      A.step(1 / 30);
+
+      const d = Math.hypot(t[0] - p.position.x, t[2] - p.position.z);
+      if (i % 60 === 0) trace.push(+d.toFixed(1));
+      if (d < best - 0.05) { best = d; stalled = 0; } else stalled++;
+      if (d < 3.0) { best = d; arrived = true; break; }
+      if (p.dead || p.position.y < -60) break;
+      // Two simulated seconds without gaining ground is a genuine stall.
+      if (stalled > 60) break;
+    }
+
+    for (const k in p.keys) p.keys[k] = false;
+    return {
+      landed, arrived, best, trace,
+      dead: p.dead, y: p.position.y, wall: p.moveState.hitWall
+    };
+  }, [from, to]);
+
+  if (!res.landed) { fail(`${label}: start point is not over solid ground`); return; }
+  if (res.dead) fail(`${label}: died en route`);
+  else if (res.y < -60) fail(`${label}: fell off the route`);
+  else if (res.arrived) pass(`${label} — walked it, no jumping`);
+  else {
+    fail(`${label}: stopped ${res.best.toFixed(1)}m short` +
+      (res.wall ? ' against a wall' : '') + ` [${res.trace.join(' > ')}]`);
+  }
+}
+
+// Each route starts on solid deck a few metres before a crossing and ends a
+// few metres past it — just enough to prove the seam is walkable, without
+// spending a minute per route at software-rasteriser frame rates. The two
+// diagonal spans are the ones that were impassable.
+// Routes line up with where each crossing actually attaches. The rim
+// balustrades are load-bearing here: walking at the wrong offset runs into one
+// and stops, which is correct behaviour and not what this test is measuring.
+await walkTo('landing stair', [0, 14.4, 70], [0, 6.2, 55]);
+await walkTo('market -> ruins bridge', [30, 7.2, 11], [53, 11, -8]);
+await walkTo('ruins -> pier bridge', [53, 11.2, -35], [44, 13, -50]);
+await walkTo('temple grand stair', [0, 14.4, -43], [0, 26.2, -61]);
+await walkTo('vault descent stair', [-31, 6.4, 13.5], [-56, -6, 13.5]);
+
+// ── ADS: is there actually a hole in the sight? ─────────────────────────────
+console.log('\naim-down-sights');
+const aperture = await page.evaluate(() => {
+  const A = window.AETHERIUM;
+  const THREE = A.THREE;
+  const ctx = A.ctx;
+  ctx.paused = false;
+  const player = ctx.get('player');
+  const weapons = ctx.get('weapons');
+
+  // Force fully-aimed pose without waiting for the blend.
+  player.locked = true;
+  player.setAds(true);
+  weapons._adsT = 1;
+  weapons.update(0.016);
+  ctx.camera.updateMatrixWorld(true);
+
+  // Cast straight down the aim axis and collect anything opaque it hits on the
+  // viewmodel layer. A working sight has a clear aperture; a solid plate does
+  // not.
+  const ray = new THREE.Raycaster();
+  ray.layers.set(1);
+  ray.near = 0.001;
+  ray.far = 3;
+  const dir = new THREE.Vector3();
+  ctx.camera.getWorldDirection(dir);
+  ray.set(ctx.camera.position, dir);
+
+  const hits = ray.intersectObject(weapons.group, true);
+  const opaque = hits.filter((h) => {
+    const m = h.object.material;
+    if (!m) return false;
+    if (m.depthTest === false) return false;          // reticle overlay
+    return !(m.transparent && m.opacity < 0.5);       // lens is see-through
+  });
+  return {
+    blocked: opaque.length,
+    firstBlocker: opaque.length ? opaque[0].object.material.name || 'unnamed' : null,
+    apertureRadius: weapons.rig.apertureRadius
+  };
+});
+
+if (aperture.blocked > 0) {
+  fail(`sight line is blocked by ${aperture.blocked} opaque part(s) ` +
+    `(first: ${aperture.firstBlocker}) — the optic has no aperture`);
+} else {
+  pass(`sight line is clear (aperture r=${aperture.apertureRadius})`);
+}
+
+await page.evaluate(() => {
+  const ctx = window.AETHERIUM.ctx;
+  ctx.get('player').setAds(false);
+  ctx.get('weapons')._adsT = 0;
+});
 
 console.log('\nperformance');
 await page.waitForTimeout(2500);

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Context } from './core/context.js';
 import { EventBus } from './core/bus.js';
 import { Rng } from './core/rng.js';
-import { Loop } from './core/loop.js';
+import { Loop, FIXED_STEP } from './core/loop.js';
 import { detectPreset, makeQuality, PRESET_ORDER } from './core/quality.js';
 import { RenderSystem } from './render/render.js';
 import { MaterialSystem } from './materials/materials.js';
@@ -126,7 +126,10 @@ async function boot() {
   // is a test hook, not a debug console.
   window.AETHERIUM = {
     ctx, loop,
-    version: '2.0.0',
+    // Exposed so the headless tools can build raycasters and vectors against
+    // the same Three.js instance the demo is running.
+    THREE,
+    version: '3.0.0',
     quality: ctx.quality.name,
     presets: PRESET_ORDER,
     stats: () => ({
@@ -144,7 +147,21 @@ async function boot() {
       ammo: weapons.ammo
     }),
     teleport: (x, y, z) => player.respawn(new THREE.Vector3(x, y, z)),
-    startGame: () => document.getElementById('startBtn').click()
+    startGame: () => document.getElementById('startBtn').click(),
+
+    // Advance the simulation without rendering.
+    //
+    // The traversal tests care about the physics solver, not the renderer, and
+    // on a software rasteriser the renderer is three orders of magnitude
+    // slower than the thing under test. This runs the identical fixed-step
+    // path the game loop runs, so what it exercises is real — it just is not
+    // gated on drawing a frame.
+    step: (seconds) => {
+      const n = Math.min(20000, Math.round(seconds / FIXED_STEP));
+      for (let i = 0; i < n; i++) ctx.fixedUpdate(FIXED_STEP);
+      return n;
+    },
+    FIXED_STEP
   };
 
   console.info(

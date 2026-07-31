@@ -27,7 +27,8 @@ export const CFG = {
   standHeight: 1.78,
   crouchHeight: 1.05,
   eyeOffset: -0.16,      // eye sits just below the capsule top
-  stepHeight: 0.55,
+  // Comfortably clears a stair tread, a kerb, or the lip on an island edge.
+  stepHeight: 0.6,
 
   walkSpeed: 5.4,
   sprintSpeed: 9.0,
@@ -89,7 +90,12 @@ export class PlayerSystem {
     this.keys = Object.create(null);
     this.moveState = {
       grounded: false, hitWall: false, hitCeiling: false, steppedUp: 0,
-      groundSurface: 'stone', stepHeight: CFG.stepHeight, wallNormal: new THREE.Vector3()
+      groundSurface: 'stone', stepHeight: CFG.stepHeight,
+      // The solver needs to know whether we were on the ground last step to
+      // decide if it may snap us back down; snapping an airborne player would
+      // cancel jumps.
+      wasGrounded: false,
+      wallNormal: new THREE.Vector3()
     };
 
     // Camera dynamics, all additive on top of the look angles.
@@ -107,6 +113,7 @@ export class PlayerSystem {
 
     this._coyote = 0;
     this._jumpBuffered = 0;
+    this._jumpLock = 0;
     this._slideTime = 0;
     this._mantle = null;
     this._lastDamage = -99;
@@ -207,6 +214,7 @@ export class PlayerSystem {
 
     this._coyote = Math.max(0, this._coyote - step);
     this._jumpBuffered = Math.max(0, this._jumpBuffered - step);
+    this._jumpLock = Math.max(0, this._jumpLock - step);
 
     if (this.state === STATE.MANTLE) {
       this._stepMantle(step);
@@ -250,6 +258,7 @@ export class PlayerSystem {
       this.velocity.y = CFG.jumpVelocity;
       this._jumpBuffered = 0;
       this._coyote = 0;
+      this._jumpLock = 0.12;
       this.grounded = false;
       if (this.state === STATE.SLIDE) this._endSlide();
       this.state = STATE.AIR;
@@ -261,6 +270,9 @@ export class PlayerSystem {
 
     const delta = scratch.v2.copy(this.velocity).multiplyScalar(step);
     this.moveState.stepHeight = this.state === STATE.SLIDE ? 0.25 : CFG.stepHeight;
+    // Ground snapping is suppressed for a moment after a jump so the launch is
+    // never pulled back down.
+    this.moveState.wasGrounded = this.grounded && this._jumpLock <= 0;
     const phys = this.ctx.get('physics');
     phys.moveCapsule(this.position, CFG.radius, this.height, delta, this.moveState);
 
@@ -490,6 +502,14 @@ export class PlayerSystem {
         amount
       });
       if (this._damageDirs.length > 6) this._damageDirs.shift();
+    }
+
+    // Aim punch: being shot knocks your aim off, so taking fire has a cost
+    // beyond the health bar. Kept small and recoverable — it should make a
+    // firefight harder to win, not take control away.
+    if (cause === 'hit') {
+      const k = clamp(amount / 26, 0.2, 1);
+      this.addRecoil(k * 0.022, this.ctx.rng.spread(k * 0.014));
     }
 
     this.ctx.bus.emit('damage:taken', { amount, cause, fromPosition });

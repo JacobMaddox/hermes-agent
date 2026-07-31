@@ -19,24 +19,30 @@ import { mergeByMaterial } from '../world/geo.js';
 // on screen at once is the temple fight, and 180 draw calls for it is not a
 // budget worth spending.
 
+// Void Syndicate units. The Syndicate wields dark energy rather than the
+// Concord's bio-augmentation, and the emissive palette carries that: violet
+// through magenta, never the warm orange the world itself is lit in. That is
+// not only fiction — against marble, gold and afternoon sun, a hostile that
+// glows warm is genuinely hard to pick out, and one that glows violet reads
+// instantly at any range.
 export const ARCHETYPES = {
   skirmisher: {
-    label: 'Skirmisher',
+    label: 'Void Wraith',
     hp: 70, speed: 6.4, accuracy: 0.72, fireRate: 0.42, burst: 3, burstGap: 1.35,
     damage: 7, range: 42, preferredRange: 14, aggression: 0.85,
-    scale: 0.88, glow: 0xff4a20, telegraph: 0.28
+    scale: 0.88, glow: 0xc040ff, telegraph: 0.28
   },
   sentry: {
-    label: 'Sentry',
+    label: 'Void Warden',
     hp: 110, speed: 2.4, accuracy: 0.88, fireRate: 0.75, burst: 2, burstGap: 1.7,
     damage: 12, range: 58, preferredRange: 26, aggression: 0.25,
-    scale: 1.0, glow: 0xffb020, telegraph: 0.5
+    scale: 1.0, glow: 0x9a5cff, telegraph: 0.5
   },
   heavy: {
-    label: 'Heavy',
+    label: 'Void Colossus',
     hp: 230, speed: 3.0, accuracy: 0.66, fireRate: 0.2, burst: 6, burstGap: 2.4,
     damage: 9, range: 34, preferredRange: 10, aggression: 0.95,
-    scale: 1.32, glow: 0xff2d10, telegraph: 0.65
+    scale: 1.32, glow: 0xe022c8, telegraph: 0.65
   }
 };
 
@@ -63,11 +69,11 @@ export function buildDrone(type, mats) {
 
   // Cloned per drone so one alert drone does not light up the whole squad.
   const eyeMat = new THREE.MeshStandardMaterial({
-    color: 0x2a0a04, emissive: A.glow, emissiveIntensity: 1.2,
+    color: 0x12042a, emissive: A.glow, emissiveIntensity: 1.2,
     roughness: 0.4, metalness: 0.0
   });
   const jetMat = new THREE.MeshStandardMaterial({
-    color: 0x1a0602, emissive: A.glow, emissiveIntensity: 1.6,
+    color: 0x0e0320, emissive: A.glow, emissiveIntensity: 1.6,
     roughness: 0.5, metalness: 0.0
   });
 

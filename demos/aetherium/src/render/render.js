@@ -17,6 +17,9 @@ import { scratch } from '../core/loop.js';
 export const LAYER_WORLD = 0;
 export const LAYER_VIEWMODEL = 1;
 
+export const VIEWMODEL_FOV_HIP = 58;
+export const VIEWMODEL_FOV_ADS = 50;
+
 export class RenderSystem {
   constructor(canvas) {
     this.canvas = canvas;
@@ -76,9 +79,11 @@ export class RenderSystem {
 
     // Viewmodel camera rides the main camera at identity but keeps its own,
     // narrower FOV — the standard trick that stops the weapon fish-eyeing when
-    // the world FOV is wide.
+    // the world FOV is wide. It narrows further while aiming (see
+    // `setViewmodelFov`), because a world that zooms while the weapon does not
+    // reads as the gun growing rather than the sight magnifying.
     const viewCamera = new THREE.PerspectiveCamera(
-      58, window.innerWidth / window.innerHeight, 0.01, 8
+      VIEWMODEL_FOV_HIP, window.innerWidth / window.innerHeight, 0.01, 8
     );
     viewCamera.layers.set(LAYER_VIEWMODEL);
     camera.add(viewCamera);
@@ -324,6 +329,13 @@ export class RenderSystem {
 
   setExposure(v) {
     this.renderer.toneMappingExposure = v;
+  }
+
+  // Driven by the weapon rig as aim-down-sights blends in.
+  setViewmodelFov(fov) {
+    if (Math.abs(this.viewCamera.fov - fov) < 0.01) return;
+    this.viewCamera.fov = fov;
+    this.viewCamera.updateProjectionMatrix();
   }
 
   // Driven by the player subsystem: damage haze intensity and screen flash.
